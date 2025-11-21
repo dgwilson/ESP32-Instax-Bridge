@@ -1,7 +1,7 @@
 set(CMAKE_HOST_SYSTEM "Darwin-25.1.0")
 set(CMAKE_HOST_SYSTEM_NAME "Darwin")
 set(CMAKE_HOST_SYSTEM_VERSION "25.1.0")
-set(CMAKE_HOST_SYSTEM_PROCESSOR "x86_64")
+set(CMAKE_HOST_SYSTEM_PROCESSOR "arm64")
 
 include("/Users/dgwilson/.platformio/packages/framework-espidf/tools/cmake/toolchain-esp32.cmake")
 
