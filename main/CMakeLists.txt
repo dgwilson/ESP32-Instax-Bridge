@@ -1,0 +1,20 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "wifi_manager.c"
+        "web_server.c"
+        "ble_scanner.c"
+        "instax_protocol.c"
+        "spiffs_manager.c"
+        "console.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_http_server
+        spiffs
+        bt
+        console
+        esp_event
+        driver
+)
