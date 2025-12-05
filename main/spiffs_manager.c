@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include "esp_spiffs.h"
 #include "esp_log.h"
 
@@ -74,7 +75,7 @@ int spiffs_manager_list_files(spiffs_file_info_t *files, int max_files) {
     int count = 0;
     struct dirent *entry;
     struct stat st;
-    char filepath[64];
+    char filepath[280];  // SPIFFS_BASE_PATH (8) + '/' (1) + max filename (255) + null (1) + padding
 
     while ((entry = readdir(dir)) != NULL && count < max_files) {
         // Skip directories
@@ -110,7 +111,7 @@ esp_err_t spiffs_manager_save_file(const char *filename, const uint8_t *data, si
         return ESP_ERR_INVALID_ARG;
     }
 
-    char filepath[64];
+    char filepath[280];  // SPIFFS_BASE_PATH (8) + '/' (1) + max filename (255) + null (1) + padding
     snprintf(filepath, sizeof(filepath), "%s/%s", SPIFFS_BASE_PATH, filename);
 
     FILE *f = fopen(filepath, "wb");
@@ -138,7 +139,7 @@ esp_err_t spiffs_manager_read_file(const char *filename, uint8_t *buffer,
         return ESP_ERR_INVALID_ARG;
     }
 
-    char filepath[64];
+    char filepath[280];  // SPIFFS_BASE_PATH (8) + '/' (1) + max filename (255) + null (1) + padding
     snprintf(filepath, sizeof(filepath), "%s/%s", SPIFFS_BASE_PATH, filename);
 
     struct stat st;

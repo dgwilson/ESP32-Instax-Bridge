@@ -40,6 +40,12 @@
 // Info Operations
 #define INSTAX_OP_SUPPORT_FUNCTION_INFO 0x02
 
+// Device Control Operations (Function 0x01)
+#define INSTAX_OP_SHUTDOWN              0x00  // Power off printer
+#define INSTAX_OP_RESET                 0x01  // Reset printer
+#define INSTAX_OP_AUTO_SLEEP_SETTINGS   0x02  // Configure auto-sleep timeout
+#define INSTAX_OP_BLE_CONNECT           0x03  // BLE connection management
+
 // Print Operations
 #define INSTAX_OP_PRINT_START           0x00
 #define INSTAX_OP_PRINT_DATA            0x01
@@ -47,8 +53,17 @@
 #define INSTAX_OP_PRINT_CANCEL          0x03
 #define INSTAX_OP_PRINT_EXECUTE         0x80
 
-// LED Operations
-#define INSTAX_OP_LED_PATTERN           0x03
+// LED & Sensor Operations (Function 0x30)
+#define INSTAX_OP_XYZ_AXIS_INFO         0x00  // Get accelerometer data
+#define INSTAX_OP_COLOR_CORRECTION      0x01  // Color correction table upload (includes print mode)
+#define INSTAX_OP_AXIS_ACTION_SETTINGS  0x02  // Configure motion actions
+#define INSTAX_OP_LED_PATTERN_DOUBLE    0x03  // Set LED pattern (double)
+#define INSTAX_OP_POWER_LED_SETTING     0x04  // Configure power LED
+#define INSTAX_OP_AR_LED_VIBRATION      0x06  // AR mode LED/vibration
+#define INSTAX_OP_ADDITIONAL_INFO       0x10  // Get extended printer info
+
+// Legacy LED operation (kept for compatibility)
+#define INSTAX_OP_LED_PATTERN           0x01  // Same as COLOR_CORRECTION
 
 // Info Types (payload for info queries)
 typedef enum {
@@ -74,6 +89,14 @@ typedef struct {
     uint32_t max_file_size;
 } instax_model_info_t;
 
+// Accelerometer Data Structure
+typedef struct {
+    int16_t x;           // X-axis tilt (left/right)
+    int16_t y;           // Y-axis tilt (forward/backward)
+    int16_t z;           // Z-axis rotation
+    uint8_t orientation; // Orientation state
+} instax_accelerometer_data_t;
+
 // Printer Info Structure
 typedef struct {
     instax_model_t model;
@@ -87,6 +110,15 @@ typedef struct {
     bool connected;
     char device_name[32];
     uint8_t device_address[6];
+    instax_accelerometer_data_t accelerometer; // Link 3 accelerometer data
+
+    // Error simulation states
+    bool cover_open;    // For error 179: Cover open
+    bool printer_busy;  // For error 181: Printer busy
+
+    // New discovered protocol features (December 2024)
+    uint8_t auto_sleep_timeout;  // Auto-sleep timeout in minutes (0 = never, 1-255 = minutes)
+    uint8_t print_mode;          // Print mode: 0x00 = Rich, 0x03 = Natural
 } instax_printer_info_t;
 
 // Print Status
@@ -192,6 +224,20 @@ size_t instax_create_print_execute(uint8_t *buffer, size_t buffer_size);
 bool instax_parse_response(const uint8_t *data, size_t len,
                            uint8_t *function, uint8_t *operation,
                            const uint8_t **payload, size_t *payload_len);
+
+/**
+ * Parse command packet from app to device
+ * @param data Packet data buffer
+ * @param len Length of packet data
+ * @param function Output: function code from packet
+ * @param operation Output: operation code from packet
+ * @param payload Output: pointer to payload start (within data buffer)
+ * @param payload_len Output: length of payload
+ * @return true if packet parsed successfully
+ */
+bool instax_parse_command(const uint8_t *data, size_t len,
+                         uint8_t *function, uint8_t *operation,
+                         const uint8_t **payload, size_t *payload_len);
 
 /**
  * Parse image support info response

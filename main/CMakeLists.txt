@@ -3,10 +3,11 @@ idf_component_register(
         "main.c"
         "wifi_manager.c"
         "web_server.c"
-        "ble_scanner.c"
+        "ble_peripheral.c"
         "instax_protocol.c"
         "spiffs_manager.c"
         "console.c"
+        "printer_emulator.c"
     INCLUDE_DIRS "."
     REQUIRES
         nvs_flash
@@ -17,4 +18,5 @@ idf_component_register(
         console
         esp_event
         driver
+        esp_driver_uart
 )

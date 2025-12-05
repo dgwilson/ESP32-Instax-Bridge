@@ -7,10 +7,11 @@
 #include <string.h>
 
 // Model information table
+// Note: All models currently use 105KB max file size
 static const instax_model_info_t model_info[] = {
-    [INSTAX_MODEL_MINI]   = { .width = 600,  .height = 800, .chunk_size = 900,  .max_file_size = 105 * 1024 },
-    [INSTAX_MODEL_SQUARE] = { .width = 800,  .height = 800, .chunk_size = 1808, .max_file_size = 105 * 1024 },
-    [INSTAX_MODEL_WIDE]   = { .width = 1260, .height = 840, .chunk_size = 900,  .max_file_size = 105 * 1024 },
+    [INSTAX_MODEL_MINI]   = { .width = 600,  .height = 800, .chunk_size = 900,  .max_file_size = 105 * 1024 },  // 105 KB for Link 1/2, 55 KB for Link 3
+    [INSTAX_MODEL_SQUARE] = { .width = 800,  .height = 800, .chunk_size = 1808, .max_file_size = 105 * 1024 },  // 105 KB
+    [INSTAX_MODEL_WIDE]   = { .width = 1260, .height = 840, .chunk_size = 900,  .max_file_size = 105 * 1024 },  // 105 KB
 };
 
 const instax_model_info_t* instax_get_model_info(instax_model_t model) {
@@ -144,8 +145,39 @@ bool instax_parse_response(const uint8_t *data, size_t len,
         return false;
     }
 
-    // Check header
+    // Check header (FROM device TO app)
     if (data[0] != INSTAX_HEADER_FROM_DEVICE_0 || data[1] != INSTAX_HEADER_FROM_DEVICE_1) {
+        return false;
+    }
+
+    // Parse length
+    uint16_t packet_len = ((uint16_t)data[2] << 8) | data[3];
+    if (len < packet_len) {
+        return false;
+    }
+
+    // Extract function and operation
+    *function = data[4];
+    *operation = data[5];
+
+    // Calculate payload length
+    // packet_len = 7 + payload_len, so payload_len = packet_len - 7
+    *payload_len = packet_len - 7;
+    *payload = (*payload_len > 0) ? &data[6] : NULL;
+
+    return true;
+}
+
+bool instax_parse_command(const uint8_t *data, size_t len,
+                         uint8_t *function, uint8_t *operation,
+                         const uint8_t **payload, size_t *payload_len) {
+    // Minimum packet size: header(2) + length(2) + opcode(2) + checksum(1) = 7
+    if (len < 7) {
+        return false;
+    }
+
+    // Check header (FROM app TO device)
+    if (data[0] != INSTAX_HEADER_TO_DEVICE_0 || data[1] != INSTAX_HEADER_TO_DEVICE_1) {
         return false;
     }
 

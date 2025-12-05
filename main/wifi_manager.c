@@ -13,6 +13,8 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_netif.h"
+#include "mdns.h"
+#include "ble_peripheral.h"
 
 static const char *TAG = "wifi_manager";
 
@@ -66,6 +68,28 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         s_retry_count = 0;
         s_wifi_status = WIFI_STATUS_CONNECTED;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+
+        // Get IP address as string
+        char ip_str[16];
+        sprintf(ip_str, IPSTR, IP2STR(&event->ip_info.ip));
+
+        // Initialize mDNS
+        esp_err_t err = mdns_init();
+        if (err == ESP_OK) {
+            mdns_hostname_set("instax-simulator");
+            mdns_instance_name_set("ESP32 Instax Printer Emulator");
+
+            // Add HTTP service
+            mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+
+            ESP_LOGI(TAG, "mDNS responder started: instax-simulator.local");
+        } else {
+            ESP_LOGW(TAG, "Failed to initialize mDNS: %s", esp_err_to_name(err));
+        }
+
+        // Update BLE device name with IP address
+        ble_peripheral_update_device_name_with_ip(ip_str);
+
         if (s_event_callback) {
             s_event_callback(WIFI_STATUS_CONNECTED);
         }
@@ -88,7 +112,13 @@ esp_err_t wifi_manager_init(void) {
 
     // Initialize TCP/IP stack
     ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    // Create default event loop if it doesn't exist
+    ret = esp_event_loop_create_default();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "Failed to create event loop: %s", esp_err_to_name(ret));
+        return ret;
+    }
 
     s_sta_netif = esp_netif_create_default_wifi_sta();
 

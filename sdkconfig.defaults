@@ -1,5 +1,26 @@
 # ESP32 Instax Bridge - SDK Configuration Defaults
 
+# Flash size (4MB is standard for ESP32)
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# Partition table
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# Disable brownout detector (temporary for low-power USB)
+CONFIG_ESP_BROWNOUT_DET=n
+
+# Task watchdog timeout
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+
+# Reduce log verbosity to make console cleaner
+# Changed from INFO (3) to WARN (2) to prevent BLE packet processing delays
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_LOG_DEFAULT_LEVEL=2
+CONFIG_LOG_MAXIMUM_LEVEL=4
+
 # Enable Bluetooth
 CONFIG_BT_ENABLED=y
 CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y

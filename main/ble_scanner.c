@@ -36,19 +36,22 @@ static ble_connection_callback_t s_connection_callback = NULL;
 static ble_data_callback_t s_data_callback = NULL;
 
 // Instax service UUID (128-bit)
-static const ble_uuid128_t instax_service_uuid = BLE_UUID128_INIT(
+// Note: Reserved for future GATT service discovery
+static const ble_uuid128_t __attribute__((unused)) instax_service_uuid = BLE_UUID128_INIT(
     0x73, 0x52, 0x0d, 0xd2, 0x1d, 0x81, 0x5f, 0x9e,
     0x3d, 0x47, 0x83, 0x2d, 0x82, 0x47, 0x95, 0x70
 );
 
 // Instax write characteristic UUID (128-bit)
-static const ble_uuid128_t instax_write_char_uuid = BLE_UUID128_INIT(
+// Note: Reserved for future GATT write operations
+static const ble_uuid128_t __attribute__((unused)) instax_write_char_uuid = BLE_UUID128_INIT(
     0x73, 0x52, 0x0d, 0xd2, 0x1d, 0x81, 0x5f, 0x9e,
     0x3d, 0x47, 0x83, 0x2d, 0x83, 0x47, 0x95, 0x70
 );
 
 // Instax notify characteristic UUID (128-bit)
-static const ble_uuid128_t instax_notify_char_uuid = BLE_UUID128_INIT(
+// Note: Currently unused, but reserved for future subscribe functionality
+static const ble_uuid128_t __attribute__((unused)) instax_notify_char_uuid = BLE_UUID128_INIT(
     0x73, 0x52, 0x0d, 0xd2, 0x1d, 0x81, 0x5f, 0x9e,
     0x3d, 0x47, 0x83, 0x2d, 0x84, 0x47, 0x95, 0x70
 );

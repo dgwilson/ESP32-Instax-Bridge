@@ -20,10 +20,10 @@
 #include "nvs_flash.h"
 
 #include "wifi_manager.h"
-#include "ble_scanner.h"
 #include "spiffs_manager.h"
 #include "web_server.h"
 #include "console.h"
+#include "printer_emulator.h"
 
 static const char *TAG = "main";
 
@@ -35,12 +35,18 @@ static EventGroupHandle_t s_wifi_event_group;
 static void wifi_event_callback(wifi_status_t status) {
     switch (status) {
         case WIFI_STATUS_CONNECTED:
-            ESP_LOGI(TAG, "WiFi connected - starting web server");
+            ESP_LOGI(TAG, "WiFi connected - starting web server and BLE");
             xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 
             // Start web server when WiFi connects
             if (!web_server_is_running()) {
                 web_server_start();
+            }
+
+            // Auto-start BLE advertising
+            if (!printer_emulator_is_advertising()) {
+                ESP_LOGI(TAG, "Auto-starting BLE advertising");
+                printer_emulator_start_advertising();
             }
             break;
 
@@ -105,12 +111,15 @@ void app_main(void) {
         wifi_manager_register_callback(wifi_event_callback);
     }
 
-    // Initialize BLE scanner
-    ret = ble_scanner_init();
+    // Add delay to reduce power spike when initializing BLE
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    // Initialize printer emulator (includes BLE peripheral)
+    ret = printer_emulator_init();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize BLE scanner");
+        ESP_LOGE(TAG, "Failed to initialize printer emulator");
     } else {
-        ESP_LOGI(TAG, "BLE scanner initialized");
+        ESP_LOGI(TAG, "Printer emulator initialized");
     }
 
     // Initialize serial console
