@@ -82,6 +82,10 @@ static esp_err_t load_state_from_nvs(void) {
         s_printer_info.is_charging = (charging != 0);
     }
 
+    // EXPERIMENT 2: Force charging to false to test official app behavior
+    s_printer_info.is_charging = false;
+    ESP_LOGI(TAG, "EXPERIMENT 2: Forcing is_charging = false");
+
     uint8_t suspend;
     if (nvs_get_u8(nvs_handle, NVS_KEY_SUSPEND, &suspend) == ESP_OK) {
         s_suspend_decrement = (suspend != 0);

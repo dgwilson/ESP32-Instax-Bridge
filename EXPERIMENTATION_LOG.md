@@ -28,7 +28,9 @@
 3. Attempt to print
 4. Monitor serial output for any changes in app behavior
 
-**Result:** _[To be filled after testing]_
+**Result:** ❌ FAILED - Official app still shows "device does not support this operation" after color tables. No change in behavior.
+
+**Conclusion:** Capability byte pattern (0x28 vs 0x26) is not the issue. Both patterns are rejected by official app.
 
 ---
 

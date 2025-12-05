@@ -349,16 +349,16 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                             response[6] = 0x00; // Payload header byte 0
                             response[7] = 0x02; // Payload header byte 1 (matches query type)
 
-                            // EXPERIMENT 1: Try capability byte 0x28 from capture-2
-                            // capture-2 (0x28): bits 5,3 = successful prints in packet capture
-                            // capture-3 (0x26): bits 5,2,1 = physical printer but no print visible in capture
+                            // EXPERIMENT 2: Revert to 0x26 (correct physical printer value)
+                            // Test with is_charging=false to see if charging state matters
                             // Bit 7 (0x80): Charging status (1 = charging, 0 = not charging)
                             // Bit 5 (0x20): Always 1 (printer type flag)
-                            // Bit 3 (0x08): Set in capture-2 working printer
-                            uint8_t capability = 0x28;  // EXPERIMENT: 0x28 = 00101000 (capture-2 pattern)
+                            // Bits 2,1 (0x06): Set on physical printer (capability flags)
+                            uint8_t capability = 0x26;  // Base: 0x26 = 00100110 (matches physical INSTAX Square capture-3)
                             if (info->is_charging) {
-                                capability |= 0x80;  // Set bit 7: 0xA8 = 10101000 (charging)
+                                capability |= 0x80;  // Set bit 7: 0xA6 = 10100110 (charging)
                             }
+                            // EXPERIMENT 2: With is_charging forced to false, this will always be 0x26
                             response[8] = capability;
 
                             response[9] = 0x00;  // Byte 2
