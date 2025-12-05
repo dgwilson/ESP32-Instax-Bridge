@@ -4,18 +4,21 @@
 
 ## Active Experiment
 
-**Experiment 1: Capability Byte 0x28 (capture-2 pattern)**
+**Experiment 2: Force Charging = False**
 
 ### Current Firmware State
-- **Capability byte:** 0x28 (not charging) / 0xA8 (charging)
-- **Bit pattern:** 00101000 = bits 5,3
-- **Source:** capture-2 packet analysis (successful prints)
-- **Commit:** `15c6f8b`
+- **Capability byte:** 0x26 (always, charging forced false)
+- **Bit pattern:** 00100110 = bits 5,2,1
+- **Charging flag:** Forced to `false` in `printer_emulator.c`
+- **Source:** Testing if official app rejects charging printers
+- **Commit:** `2335a80`
 
 ### Changes from Baseline
 ```diff
-- uint8_t capability = 0x26;  // capture-3 pattern (bits 5,2,1)
-+ uint8_t capability = 0x28;  // capture-2 pattern (bits 5,3)
++ // In printer_emulator.c after NVS load:
++ s_printer_info.is_charging = false;  // Force not charging
++
++ // Capability byte remains 0x26 but will never have bit 7 set
 ```
 
 ### Testing Instructions
@@ -26,13 +29,19 @@
 5. Observe behavior and monitor serial output
 
 ### Expected Serial Output
-Look for capability byte in printer function response:
+Look for:
+1. Charging forced to false on boot:
 ```
-I (xxxxx) ble_peripheral: Sending printer function: XX photos, charging=1
+I (xxxxx) printer_emulator: EXPERIMENT 2: Forcing is_charging = false
+```
+
+2. Capability byte 0x26 (not charging) in printer function response:
+```
+I (xxxxx) ble_peripheral: Sending printer function: XX photos, charging=0
 ...
-Response: 61 42 00 11 00 02 00 02 A8 00 00 XX ...
+Response: 61 42 00 11 00 02 00 02 26 00 00 XX ...
                                     ^^
-                                    Should be 0xA8 (charging) or 0x28 (not charging)
+                                    Should be 0x26 (not charging, never 0xA6)
 ```
 
 ## Baseline for Comparison
@@ -65,8 +74,9 @@ idf.py flash
 ## Quick Reference
 
 ### Git Commits
-- Baseline: `8fb9f0a` (capability 0x26)
-- Experiment 1: `15c6f8b` (capability 0x28)
+- Baseline: `8fb9f0a` (capability 0x26, charging from NVS)
+- Experiment 1: `15c6f8b` (capability 0x28) - ❌ FAILED
+- Experiment 2: `2335a80` (capability 0x26, charging forced false) - ⏳ TESTING
 
 ### Key Files
 - Protocol implementation: `main/ble_peripheral.c`
