@@ -10,6 +10,7 @@
 #include "spiffs_manager.h"
 #include "instax_protocol.h"
 #include <string.h>
+#include <errno.h>
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "cJSON.h"
@@ -23,6 +24,7 @@ static const char *HTML_TEMPLATE =
 "<html>\n"
 "<head>\n"
 "    <title>ESP32 Instax Printer Emulator</title>\n"
+"    <meta charset=\"UTF-8\">\n"
 "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
 "    <style>\n"
 "        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }\n"
@@ -51,11 +53,25 @@ static const char *HTML_TEMPLATE =
 "        .progress-bar { height: 100%%; background: #4CAF50; transition: width 0.3s; }\n"
 "        .printer-info { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }\n"
 "        .printer-info div { background: #fff; padding: 10px; border-radius: 4px; }\n"
+"        .dis-input { width: 150px; font-size: 14px; }\n"
+"        .countdown-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%%; height: 100%%; background: rgba(0,0,0,0.8); z-index: 9999; }\n"
+"        .countdown-overlay.visible { display: flex; align-items: center; justify-content: center; }\n"
+"        .countdown-content { background: white; padding: 40px; border-radius: 10px; text-align: center; }\n"
+"        .countdown-number { font-size: 72px; font-weight: bold; color: #4CAF50; margin: 20px 0; }\n"
+"        .countdown-message { font-size: 18px; color: #666; margin-bottom: 10px; }\n"
 "    </style>\n"
 "</head>\n"
 "<body>\n"
 "    <div id=\"offline-banner\" class=\"offline-banner\">\n"
 "        ESP32 OFFLINE - Device not responding. Check power and connections.\n"
+"    </div>\n"
+"\n"
+"    <div id=\"countdown-overlay\" class=\"countdown-overlay\">\n"
+"        <div class=\"countdown-content\">\n"
+"            <div class=\"countdown-message\">Rebooting ESP32 to apply new GATT services...</div>\n"
+"            <div class=\"countdown-number\" id=\"countdown-number\">10</div>\n"
+"            <div class=\"countdown-message\">Page will reload automatically</div>\n"
+"        </div>\n"
 "    </div>\n"
 "\n"
 "    <h1>ESP32 Instax Printer Emulator</h1>\n"
@@ -86,11 +102,56 @@ static const char *HTML_TEMPLATE =
 "        <div id=\"ble-advertising-status\" class=\"status\">Checking...</div>\n"
 "        <button onclick=\"startBLE()\">Start Advertising</button>\n"
 "        <button onclick=\"stopBLE()\" class=\"danger\">Stop Advertising</button>\n"
+"        <button onclick=\"dumpConfig()\" style=\"background:#2196F3;\">📋 Dump Config to Monitor</button>\n"
 "        <div id=\"printer-info\" class=\"printer-info\" style=\"margin-top:15px;\"></div>\n"
+"        <div id=\"device-info\" class=\"printer-info\" style=\"margin-top:15px;display:none;\">\n"
+"            <h3 style=\"grid-column: 1 / -1; margin:0 0 10px 0; color:#666;\">Device Information Service (BLE)</h3>\n"
+"        </div>\n"
 "    </div>\n"
 "\n"
 "    <div class=\"section\">\n"
 "        <h2>Printer Settings</h2>\n"
+"\n"
+"        <!-- Printer Model Reference Table -->\n"
+"        <div style=\"margin-bottom:20px; padding:15px; background:#f8f9fa; border-radius:5px;\">\n"
+"            <h3 style=\"margin:0 0 10px 0; color:#666;\">Printer Model Reference</h3>\n"
+"            <table style=\"width:100%; border-collapse:collapse; font-size:13px;\">\n"
+"                <thead>\n"
+"                    <tr style=\"background:#e9ecef;\">\n"
+"                        <th style=\"padding:8px; text-align:left; border:1px solid #dee2e6;\">Model</th>\n"
+"                        <th style=\"padding:8px; text-align:left; border:1px solid #dee2e6;\">BLE Model #</th>\n"
+"                        <th style=\"padding:8px; text-align:left; border:1px solid #dee2e6;\">Resolution</th>\n"
+"                        <th style=\"padding:8px; text-align:left; border:1px solid #dee2e6;\">Print Size</th>\n"
+"                        <th style=\"padding:8px; text-align:left; border:1px solid #dee2e6;\">Film Type</th>\n"
+"                    </tr>\n"
+"                </thead>\n"
+"                <tbody>\n"
+"                    <tr>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6;\"><strong>Mini Link</strong></td>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6; font-family:monospace;\">FI033</td>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6; font-family:monospace;\">600x800</td>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6;\">62mm × 46mm</td>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6;\">Instax Mini</td>\n"
+"                    </tr>\n"
+"                    <tr>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6;\"><strong>Square Link</strong></td>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6; font-family:monospace;\">FI017</td>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6; font-family:monospace;\">800x800</td>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6;\">62mm × 62mm</td>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6;\">Instax Square</td>\n"
+"                    </tr>\n"
+"                    <tr>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6;\"><strong>Wide Link</strong></td>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6; font-family:monospace;\">FI022</td>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6; font-family:monospace;\">1260x840</td>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6;\">99mm × 62mm</td>\n"
+"                        <td style=\"padding:8px; border:1px solid #dee2e6;\">Instax Wide</td>\n"
+"                    </tr>\n"
+"                </tbody>\n"
+"            </table>\n"
+"            <p style=\"margin:10px 0 0 0; font-size:12px; color:#666;\"><strong>Note:</strong> Official apps filter by BLE Model Number. Set the correct model to ensure your app can discover the printer.</p>\n"
+"        </div>\n"
+"\n"
 "        <div style=\"margin-bottom:15px;\">\n"
 "            <label>Model: </label>\n"
 "            <select id=\"model-select\" onchange=\"setModel(this.value)\">\n"
@@ -98,6 +159,16 @@ static const char *HTML_TEMPLATE =
 "                <option value=\"square\">Square (800x800)</option>\n"
 "                <option value=\"wide\">Wide (1260x840)</option>\n"
 "            </select>\n"
+"        </div>\n"
+"        <div style=\"margin-bottom:15px;\">\n"
+"            <label>Device Name: </label>\n"
+"            <input type=\"text\" id=\"device-name-input\" value=\"INSTAX-50196563\" maxlength=\"32\" style=\"width:200px;\">\n"
+"            <button onclick=\"setDeviceName()\">Apply</button>\n"
+"            <div style=\"margin-top:5px; font-size:12px; color:#666;\">\n"
+"                Quick presets: \n"
+"                <button onclick=\"document.getElementById('device-name-input').value='INSTAX-50196563'; setDeviceName();\" style=\"font-size:11px;\">Numeric</button>\n"
+"                <button onclick=\"document.getElementById('device-name-input').value='INSTAX-Simulator'; setDeviceName();\" style=\"font-size:11px;\">Simulator</button>\n"
+"            </div>\n"
 "        </div>\n"
 "        <div style=\"margin-bottom:15px;\">\n"
 "            <label>Battery: <span id=\"battery-value\">85</span>%</label><br>\n"
@@ -214,6 +285,25 @@ static const char *HTML_TEMPLATE =
 "        </div>\n"
 "    </div>\n"
 "\n"
+"    <div class=\"section\">\n"
+"        <h2>Documentation</h2>\n"
+"        <p style=\"color:#666;margin-bottom:15px;\">Project documentation and guides:</p>\n"
+"        <div style=\"display:flex;flex-direction:column;gap:10px;\">\n"
+"            <a href=\"/docs/protocol\" target=\"_blank\" style=\"padding:12px;background:#fff;border:1px solid #ddd;border-radius:4px;text-decoration:none;color:#333;display:block;\">\n"
+"                <strong style=\"color:#4CAF50;\">INSTAX Protocol Documentation</strong><br>\n"
+"                <span style=\"font-size:0.9em;color:#666;\">Complete BLE protocol specification with packet formats and sequences</span>\n"
+"            </a>\n"
+"            <a href=\"/docs/install\" target=\"_blank\" style=\"padding:12px;background:#fff;border:1px solid #ddd;border-radius:4px;text-decoration:none;color:#333;display:block;\">\n"
+"                <strong style=\"color:#4CAF50;\">ESP-IDF Installation Guide</strong><br>\n"
+"                <span style=\"font-size:0.9em;color:#666;\">Step-by-step instructions for installing ESP-IDF development environment</span>\n"
+"            </a>\n"
+"            <a href=\"/docs/readme\" target=\"_blank\" style=\"padding:12px;background:#fff;border:1px solid #ddd;border-radius:4px;text-decoration:none;color:#333;display:block;\">\n"
+"                <strong style=\"color:#4CAF50;\">Project README</strong><br>\n"
+"                <span style=\"font-size:0.9em;color:#666;\">Project overview, features, setup instructions, and testing guide</span>\n"
+"            </a>\n"
+"        </div>\n"
+"    </div>\n"
+"\n"
 "    <script>\n"
 "        function startBLE() {\n"
 "            document.getElementById('ble-advertising-status').textContent = 'Starting...';\n"
@@ -243,6 +333,19 @@ static const char *HTML_TEMPLATE =
 "                });\n"
 "        }\n"
 "\n"
+"        function dumpConfig() {\n"
+"            fetch('/api/dump-config', {method: 'POST'})\n"
+"                .then(r => r.json())\n"
+"                .then(d => {\n"
+"                    if(d.success) {\n"
+"                        alert('✅ Configuration dumped to serial monitor!\\n\\nCheck your serial monitor output to see complete configuration details.');\n"
+"                    } else {\n"
+"                        alert('❌ Failed to dump configuration');\n"
+"                    }\n"
+"                })\n"
+"                .catch(e => alert('❌ Error: ' + e));\n"
+"        }\n"
+"\n"
 "        function getPrinterInfo() {\n"
 "            fetch('/api/printer-info')\n"
 "                .then(r => r.json())\n"
@@ -258,6 +361,11 @@ static const char *HTML_TEMPLATE =
 "\n"
 "                    // Update UI controls to match current state\n"
 "                    document.getElementById('model-select').value = d.model;\n"
+"                    // Only update device name if user isn't currently editing it\n"
+"                    const deviceNameInput = document.getElementById('device-name-input');\n"
+"                    if (document.activeElement !== deviceNameInput) {\n"
+"                        deviceNameInput.value = d.device_name;\n"
+"                    }\n"
 "                    document.getElementById('battery-slider').value = d.battery;\n"
 "                    document.getElementById('battery-value').textContent = d.battery;\n"
 "                    document.getElementById('prints-input').value = d.photos_remaining;\n"
@@ -290,6 +398,37 @@ static const char *HTML_TEMPLATE =
 "                                        'Unknown (0x' + d.print_mode.toString(16).toUpperCase() + ')';\n"
 "                        document.getElementById('print-mode-display').textContent = modeText;\n"
 "                    }\n"
+"\n"
+"                    // Update Device Information Service (DIS) display with editable fields\n"
+"                    if (d.device_info) {\n"
+"                        const deviceInfo = document.getElementById('device-info');\n"
+"                        // Only create HTML structure if it doesn't exist yet\n"
+"                        if (!document.getElementById('dis-model-number')) {\n"
+"                            deviceInfo.innerHTML = '<h3 style=\"grid-column: 1 / -1; margin:0 0 10px 0; color:#666;\">Device Information Service (BLE GATT)</h3>' +\n"
+"                                '<div><strong>Model Number:</strong><br><input type=\"text\" id=\"dis-model-number\" class=\"dis-input\"></div>' +\n"
+"                                '<div><strong>Serial Number:</strong><br><input type=\"text\" id=\"dis-serial-number\" class=\"dis-input\"></div>' +\n"
+"                                '<div><strong>Firmware Revision:</strong><br><input type=\"text\" id=\"dis-firmware\" class=\"dis-input\"></div>' +\n"
+"                                '<div><strong>Hardware Revision:</strong><br><input type=\"text\" id=\"dis-hardware\" class=\"dis-input\"></div>' +\n"
+"                                '<div><strong>Software Revision:</strong><br><input type=\"text\" id=\"dis-software\" class=\"dis-input\"></div>' +\n"
+"                                '<div><strong>Manufacturer Name:</strong><br><input type=\"text\" id=\"dis-manufacturer\" class=\"dis-input\"></div>' +\n"
+
+"                                '<div style=\"grid-column: 1 / -1;\"><button onclick=\"saveDIS()\">Save DIS Values</button><button onclick=\"resetDISDefaults()\">Reset to Model Defaults</button></div>';\n"
+"                        }\n"
+"                        // Update values only if fields don't have focus\n"
+"                        const modelInput = document.getElementById('dis-model-number');\n"
+"                        if (document.activeElement !== modelInput) modelInput.value = d.device_info.model_number;\n"
+"                        const serialInput = document.getElementById('dis-serial-number');\n"
+"                        if (document.activeElement !== serialInput) serialInput.value = d.device_info.serial_number;\n"
+"                        const firmwareInput = document.getElementById('dis-firmware');\n"
+"                        if (document.activeElement !== firmwareInput) firmwareInput.value = d.device_info.firmware_revision;\n"
+"                        const hardwareInput = document.getElementById('dis-hardware');\n"
+"                        if (document.activeElement !== hardwareInput) hardwareInput.value = d.device_info.hardware_revision;\n"
+"                        const softwareInput = document.getElementById('dis-software');\n"
+"                        if (document.activeElement !== softwareInput) softwareInput.value = d.device_info.software_revision;\n"
+"                        const manufacturerInput = document.getElementById('dis-manufacturer');\n"
+"                        if (document.activeElement !== manufacturerInput) manufacturerInput.value = d.device_info.manufacturer_name;\n"
+"                        deviceInfo.style.display = 'grid';\n"
+"                    }\n"
 "                });\n"
 "        }\n"
 "\n"
@@ -302,9 +441,38 @@ static const char *HTML_TEMPLATE =
 "              .then(d => {\n"
 "                  if(d.success) {\n"
 "                      console.log('Model updated to: ' + model);\n"
-"                      getPrinterInfo();\n"
+"                      // Show countdown and reboot to apply new GATT services\n"
+"                      startRebootCountdown();\n"
 "                  }\n"
 "              });\n"
+"        }\n"
+"\n"
+"        function startRebootCountdown() {\n"
+"            const overlay = document.getElementById('countdown-overlay');\n"
+"            const numberEl = document.getElementById('countdown-number');\n"
+"            overlay.classList.add('visible');\n"
+"            \n"
+"            let count = 10;\n"
+"            numberEl.textContent = count;\n"
+"            \n"
+"            const interval = setInterval(() => {\n"
+"                count--;\n"
+"                if (count > 0) {\n"
+"                    numberEl.textContent = count;\n"
+"                } else {\n"
+"                    clearInterval(interval);\n"
+"                    numberEl.textContent = 'Rebooting...';\n"
+"                    // Trigger ESP32 reboot\n"
+"                    fetch('/api/reboot', {method: 'POST'})\n"
+"                        .catch(() => {})  // Ignore errors as device is rebooting\n"
+"                        .finally(() => {\n"
+"                            // Wait 5 seconds then reload page\n"
+"                            setTimeout(() => {\n"
+"                                window.location.reload();\n"
+"                            }, 5000);\n"
+"                        });\n"
+"                }\n"
+"            }, 1000);\n"
 "        }\n"
 "\n"
 "        function setBattery(percentage) {\n"
@@ -317,6 +485,32 @@ static const char *HTML_TEMPLATE =
 "                  if(d.success) {\n"
 "                      console.log('Battery updated to: ' + percentage + '%%');\n"
 "                      getPrinterInfo();\n"
+"                  }\n"
+"              });\n"
+"        }\n"
+"\n"
+"        function setDeviceName() {\n"
+"            const name = document.getElementById('device-name-input').value.trim();\n"
+"            if(!name) {\n"
+"                alert('Device name cannot be empty');\n"
+"                return;\n"
+"            }\n"
+"            if(name.length > 32) {\n"
+"                alert('Device name too long (max 32 characters)');\n"
+"                return;\n"
+"            }\n"
+"            fetch('/api/set-name', {\n"
+"                method: 'POST',\n"
+"                headers: {'Content-Type': 'application/json'},\n"
+"                body: JSON.stringify({name: name})\n"
+"            }).then(r => r.json())\n"
+"              .then(d => {\n"
+"                  if(d.success) {\n"
+"                      console.log('Device name updated to: ' + name);\n"
+"                      alert('Device name changed to: ' + name + '\\n\\nBLE advertising has been restarted.');\n"
+"                      getPrinterInfo();\n"
+"                  } else {\n"
+"                      alert('Failed to update device name');\n"
 "                  }\n"
 "              });\n"
 "        }\n"
@@ -442,6 +636,53 @@ static const char *HTML_TEMPLATE =
 "            setTimeout(() => {\n"
 "                statusDiv.textContent = '';\n"
 "            }, 2000);\n"
+"        }\n"
+"\n"
+"        function saveDIS() {\n"
+"            const disData = {\n"
+"                model_number: document.getElementById('dis-model-number').value,\n"
+"                serial_number: document.getElementById('dis-serial-number').value,\n"
+"                firmware_revision: document.getElementById('dis-firmware').value,\n"
+"                hardware_revision: document.getElementById('dis-hardware').value,\n"
+"                software_revision: document.getElementById('dis-software').value,\n"
+"                manufacturer_name: document.getElementById('dis-manufacturer').value\n"
+"            };\n"
+"\n"
+"            fetch('/api/set-dis', {\n"
+"                method: 'POST',\n"
+"                headers: {'Content-Type': 'application/json'},\n"
+"                body: JSON.stringify(disData)\n"
+"            }).then(r => r.json())\n"
+"              .then(d => {\n"
+"                  if(d.success) {\n"
+"                      alert('Device Information Service values saved successfully!');\n"
+"                      getPrinterInfo();\n"
+"                  } else {\n"
+"                      alert('Failed to save DIS values');\n"
+"                  }\n"
+"              }).catch(e => {\n"
+"                  alert('Error saving DIS values: ' + e);\n"
+"              });\n"
+"        }\n"
+"\n"
+"        function resetDISDefaults() {\n"
+"            if (!confirm('Reset all Device Information Service values to model-specific defaults?')) {\n"
+"                return;\n"
+"            }\n"
+"\n"
+"            fetch('/api/reset-dis-defaults', {\n"
+"                method: 'POST'\n"
+"            }).then(r => r.json())\n"
+"              .then(d => {\n"
+"                  if(d.success) {\n"
+"                      alert('Device Information Service reset to defaults!');\n"
+"                      getPrinterInfo();\n"
+"                  } else {\n"
+"                      alert('Failed to reset DIS values');\n"
+"                  }\n"
+"              }).catch(e => {\n"
+"                  alert('Error resetting DIS values: ' + e);\n"
+"              });\n"
 "        }\n"
 "\n"
 "        function refreshFiles() {\n"
@@ -633,9 +874,14 @@ static const char *HTML_TEMPLATE =
 "</html>\n";
 
 // Handler for main page
-static esp_err_t root_handler(httpd_req_t *req) {
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, HTML_TEMPLATE, strlen(HTML_TEMPLATE));
+static esp_err_t root_handler(httpd_req_t *req)
+{
+    // Ensure UTF-8 so characters like “×” display correctly
+    httpd_resp_set_type(req, "text/html; charset=UTF-8");
+    
+    // Send the HTML page
+    httpd_resp_send(req, HTML_TEMPLATE, HTTPD_RESP_USE_STRLEN);
+    
     return ESP_OK;
 }
 
@@ -741,6 +987,17 @@ static esp_err_t api_printer_info_handler(httpd_req_t *req) {
     // Add newly discovered protocol features (Dec 2025)
     cJSON_AddNumberToObject(root, "auto_sleep_timeout", info->auto_sleep_timeout);
     cJSON_AddNumberToObject(root, "print_mode", info->print_mode);
+
+    // Add Device Information Service (DIS) characteristics
+    // Uses values from printer_info (model-specific defaults or user-configured)
+    cJSON *dis = cJSON_CreateObject();
+    cJSON_AddStringToObject(dis, "model_number", info->model_number);
+    cJSON_AddStringToObject(dis, "serial_number", info->serial_number);
+    cJSON_AddStringToObject(dis, "firmware_revision", info->firmware_revision);
+    cJSON_AddStringToObject(dis, "hardware_revision", info->hardware_revision);
+    cJSON_AddStringToObject(dis, "software_revision", info->software_revision);
+    cJSON_AddStringToObject(dis, "manufacturer_name", info->manufacturer_name);
+    cJSON_AddItemToObject(root, "device_info", dis);
 
     char *json = cJSON_Print(root);
     httpd_resp_set_type(req, "application/json");
@@ -1009,6 +1266,27 @@ static esp_err_t api_ble_stop_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// Handler for dumping configuration to serial monitor
+static esp_err_t api_dump_config_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Configuration dump requested via web interface");
+
+    // Call the dump function which will print to serial monitor
+    printer_emulator_dump_config();
+
+    // Return success response
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "success", true);
+    cJSON_AddStringToObject(root, "message", "Configuration dumped to serial monitor");
+
+    char *json = cJSON_Print(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+
+    free(json);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
 // Handler for setting printer model
 static esp_err_t api_set_model_handler(httpd_req_t *req) {
     char buf[100];
@@ -1060,6 +1338,180 @@ static esp_err_t api_set_model_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// HTML template for markdown viewer
+static const char *MARKDOWN_VIEWER_TEMPLATE_START =
+"<!DOCTYPE html>\n"
+"<html>\n"
+"<head>\n"
+"    <meta charset=\"UTF-8\">\n"
+"    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+"    <title>%s</title>\n"  // Document title
+"    <script src=\"https://cdn.jsdelivr.net/npm/marked/marked.min.js\"></script>\n"
+"    <style>\n"
+"        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; }\n"
+"        pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; }\n"
+"        code { background: #f6f8fa; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', monospace; font-size: 0.9em; }\n"
+"        pre code { background: none; padding: 0; }\n"
+"        table { border-collapse: collapse; width: 100%%; margin: 16px 0; }\n"
+"        th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }\n"
+"        th { background: #f6f8fa; font-weight: bold; }\n"
+"        h1 { border-bottom: 1px solid #eaecef; padding-bottom: 8px; }\n"
+"        h2 { border-bottom: 1px solid #eaecef; padding-bottom: 6px; margin-top: 24px; }\n"
+"        a { color: #0366d6; text-decoration: none; }\n"
+"        a:hover { text-decoration: underline; }\n"
+"        .back-link { display: inline-block; margin-bottom: 20px; padding: 8px 16px; background: #f6f8fa; border-radius: 6px; }\n"
+"    </style>\n"
+"</head>\n"
+"<body>\n"
+"    <a href=\"/\" class=\"back-link\">← Back to Main Page</a>\n"
+"    <div id=\"content\">Loading...</div>\n"
+"    <script>\n"
+"        fetch('%s')\n"  // Markdown file path
+"            .then(r => r.text())\n"
+"            .then(md => { document.getElementById('content').innerHTML = marked.parse(md); })\n"
+"            .catch(e => { document.getElementById('content').innerHTML = '<p style=\"color:red;\">Error loading document: ' + e + '</p>'; });\n"
+"    </script>\n"
+"</body>\n"
+"</html>\n";
+
+// Handler for serving documentation files with markdown rendering
+static esp_err_t docs_protocol_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "docs_protocol_handler called");
+
+    httpd_resp_set_type(req, "text/html; charset=UTF-8");
+
+    char html[2048];
+    int len = snprintf(html, sizeof(html), MARKDOWN_VIEWER_TEMPLATE_START,
+                      "INSTAX Protocol Documentation", "/docs/protocol/raw");
+    httpd_resp_send(req, html, len);
+
+    ESP_LOGI(TAG, "Protocol documentation viewer sent");
+    return ESP_OK;
+}
+
+static esp_err_t docs_install_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "docs_install_handler called");
+
+    httpd_resp_set_type(req, "text/html; charset=UTF-8");
+
+    char html[2048];
+    int len = snprintf(html, sizeof(html), MARKDOWN_VIEWER_TEMPLATE_START,
+                      "ESP-IDF Installation Guide", "/docs/install/raw");
+    httpd_resp_send(req, html, len);
+
+    ESP_LOGI(TAG, "Install guide viewer sent");
+    return ESP_OK;
+}
+
+static esp_err_t docs_readme_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "docs_readme_handler called");
+
+    httpd_resp_set_type(req, "text/html; charset=UTF-8");
+
+    char html[2048];
+    int len = snprintf(html, sizeof(html), MARKDOWN_VIEWER_TEMPLATE_START,
+                      "ESP32 INSTAX Bridge - README", "/docs/readme/raw");
+    httpd_resp_send(req, html, len);
+
+    ESP_LOGI(TAG, "README viewer sent");
+    return ESP_OK;
+}
+
+// Raw markdown handlers for fetching actual content
+static esp_err_t docs_protocol_raw_handler(httpd_req_t *req) {
+    FILE *f = fopen("/spiffs/INSTAX_PROTOCOL.md", "r");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open /spiffs/INSTAX_PROTOCOL.md: %s", strerror(errno));
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "text/markdown; charset=UTF-8");
+
+    char buffer[1024];
+    size_t read_bytes;
+    while ((read_bytes = fread(buffer, 1, sizeof(buffer), f)) > 0) {
+        if (httpd_resp_send_chunk(req, buffer, read_bytes) != ESP_OK) {
+            fclose(f);
+            return ESP_FAIL;
+        }
+    }
+
+    fclose(f);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t docs_install_raw_handler(httpd_req_t *req) {
+    FILE *f = fopen("/spiffs/INSTALL_ESP_IDF.md", "r");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open /spiffs/INSTALL_ESP_IDF.md: %s", strerror(errno));
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "text/markdown; charset=UTF-8");
+
+    char buffer[1024];
+    size_t read_bytes;
+    while ((read_bytes = fread(buffer, 1, sizeof(buffer), f)) > 0) {
+        if (httpd_resp_send_chunk(req, buffer, read_bytes) != ESP_OK) {
+            fclose(f);
+            return ESP_FAIL;
+        }
+    }
+
+    fclose(f);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t docs_readme_raw_handler(httpd_req_t *req) {
+    FILE *f = fopen("/spiffs/README.md", "r");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open /spiffs/README.md: %s", strerror(errno));
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "text/markdown; charset=UTF-8");
+
+    char buffer[1024];
+    size_t read_bytes;
+    while ((read_bytes = fread(buffer, 1, sizeof(buffer), f)) > 0) {
+        if (httpd_resp_send_chunk(req, buffer, read_bytes) != ESP_OK) {
+            fclose(f);
+            return ESP_FAIL;
+        }
+    }
+
+    fclose(f);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t api_reboot_handler(httpd_req_t *req) {
+    // Send success response before rebooting
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "success", true);
+    char *response_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, response_str, strlen(response_str));
+
+    free(response_str);
+    cJSON_Delete(response);
+
+    ESP_LOGI(TAG, "Reboot requested via web interface");
+
+    // Delay to allow response to be sent
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // Trigger software reset
+    esp_restart();
+
+    return ESP_OK;  // Never reached
+}
+
 // Handler for setting battery level
 static esp_err_t api_set_battery_handler(httpd_req_t *req) {
     char buf[100];
@@ -1091,6 +1543,50 @@ static esp_err_t api_set_battery_handler(httpd_req_t *req) {
     }
 
     esp_err_t result = printer_emulator_set_battery(percentage);
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "success", result == ESP_OK);
+    char *response_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, response_str, strlen(response_str));
+
+    free(response_str);
+    cJSON_Delete(response);
+    cJSON_Delete(json);
+    return ESP_OK;
+}
+
+// Handler for setting device name
+static esp_err_t api_set_name_handler(httpd_req_t *req) {
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request");
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    cJSON *json = cJSON_Parse(buf);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *name_item = cJSON_GetObjectItem(json, "name");
+    if (!name_item || !cJSON_IsString(name_item)) {
+        cJSON_Delete(json);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid name");
+        return ESP_FAIL;
+    }
+
+    const char *name = name_item->valuestring;
+    if (strlen(name) == 0 || strlen(name) > 32) {
+        cJSON_Delete(json);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Name must be 1-32 characters");
+        return ESP_FAIL;
+    }
+
+    esp_err_t result = printer_emulator_set_device_name(name);
 
     cJSON *response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "success", result == ESP_OK);
@@ -1365,13 +1861,100 @@ error:
     return ESP_FAIL;
 }
 
+// Handler for updating Device Information Service values
+static esp_err_t api_set_dis_handler(httpd_req_t *req) {
+    char buf[512];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request");
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    cJSON *json = cJSON_Parse(buf);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    esp_err_t result = ESP_OK;
+
+    // Update each field if provided
+    cJSON *item = cJSON_GetObjectItem(json, "model_number");
+    if (item && cJSON_IsString(item)) {
+        result = printer_emulator_set_model_number(item->valuestring);
+        if (result != ESP_OK) goto error;
+    }
+
+    item = cJSON_GetObjectItem(json, "serial_number");
+    if (item && cJSON_IsString(item)) {
+        result = printer_emulator_set_serial_number(item->valuestring);
+        if (result != ESP_OK) goto error;
+    }
+
+    item = cJSON_GetObjectItem(json, "firmware_revision");
+    if (item && cJSON_IsString(item)) {
+        result = printer_emulator_set_firmware_revision(item->valuestring);
+        if (result != ESP_OK) goto error;
+    }
+
+    item = cJSON_GetObjectItem(json, "hardware_revision");
+    if (item && cJSON_IsString(item)) {
+        result = printer_emulator_set_hardware_revision(item->valuestring);
+        if (result != ESP_OK) goto error;
+    }
+
+    item = cJSON_GetObjectItem(json, "software_revision");
+    if (item && cJSON_IsString(item)) {
+        result = printer_emulator_set_software_revision(item->valuestring);
+        if (result != ESP_OK) goto error;
+    }
+
+    item = cJSON_GetObjectItem(json, "manufacturer_name");
+    if (item && cJSON_IsString(item)) {
+        result = printer_emulator_set_manufacturer_name(item->valuestring);
+        if (result != ESP_OK) goto error;
+    }
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "success", true);
+    char *response_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, response_str, strlen(response_str));
+
+    free(response_str);
+    cJSON_Delete(response);
+    cJSON_Delete(json);
+    return ESP_OK;
+
+error:
+    cJSON_Delete(json);
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to update DIS values");
+    return ESP_FAIL;
+}
+
+// Handler for resetting DIS to model defaults
+static esp_err_t api_reset_dis_defaults_handler(httpd_req_t *req) {
+    esp_err_t result = printer_emulator_reset_dis_to_defaults();
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "success", result == ESP_OK);
+    char *response_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, response_str, strlen(response_str));
+
+    free(response_str);
+    cJSON_Delete(response);
+    return ESP_OK;
+}
+
 esp_err_t web_server_start(void) {
     if (s_server != NULL) {
         return ESP_OK; // Already running
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 20;  // Increased for printer settings endpoints
+    config.max_uri_handlers = 32;  // Increased for printer settings, DIS endpoints, and documentation
     config.stack_size = 8192;
     config.uri_match_fn = httpd_uri_match_wildcard;  // Enable wildcard matching for /api/files/*
 
@@ -1392,14 +1975,25 @@ esp_err_t web_server_start(void) {
     httpd_uri_t upload_uri = { .uri = "/api/upload", .method = HTTP_POST, .handler = api_upload_handler };
     httpd_uri_t ble_start_uri = { .uri = "/api/ble-start", .method = HTTP_POST, .handler = api_ble_start_handler };
     httpd_uri_t ble_stop_uri = { .uri = "/api/ble-stop", .method = HTTP_POST, .handler = api_ble_stop_handler };
+    httpd_uri_t dump_config_uri = { .uri = "/api/dump-config", .method = HTTP_POST, .handler = api_dump_config_handler };
     httpd_uri_t set_model_uri = { .uri = "/api/set-model", .method = HTTP_POST, .handler = api_set_model_handler };
     httpd_uri_t set_battery_uri = { .uri = "/api/set-battery", .method = HTTP_POST, .handler = api_set_battery_handler };
+    httpd_uri_t set_name_uri = { .uri = "/api/set-name", .method = HTTP_POST, .handler = api_set_name_handler };
     httpd_uri_t set_prints_uri = { .uri = "/api/set-prints", .method = HTTP_POST, .handler = api_set_prints_handler };
     httpd_uri_t set_charging_uri = { .uri = "/api/set-charging", .method = HTTP_POST, .handler = api_set_charging_handler };
     httpd_uri_t set_suspend_decrement_uri = { .uri = "/api/set-suspend-decrement", .method = HTTP_POST, .handler = api_set_suspend_decrement_handler };
     httpd_uri_t set_cover_open_uri = { .uri = "/api/set-cover-open", .method = HTTP_POST, .handler = api_set_cover_open_handler };
     httpd_uri_t set_printer_busy_uri = { .uri = "/api/set-printer-busy", .method = HTTP_POST, .handler = api_set_printer_busy_handler };
     httpd_uri_t set_accel_uri = { .uri = "/api/set-accelerometer", .method = HTTP_POST, .handler = api_set_accelerometer_handler };
+    httpd_uri_t set_dis_uri = { .uri = "/api/set-dis", .method = HTTP_POST, .handler = api_set_dis_handler };
+    httpd_uri_t reset_dis_defaults_uri = { .uri = "/api/reset-dis-defaults", .method = HTTP_POST, .handler = api_reset_dis_defaults_handler };
+    httpd_uri_t reboot_uri = { .uri = "/api/reboot", .method = HTTP_POST, .handler = api_reboot_handler };
+    httpd_uri_t docs_protocol_uri = { .uri = "/docs/protocol", .method = HTTP_GET, .handler = docs_protocol_handler };
+    httpd_uri_t docs_install_uri = { .uri = "/docs/install", .method = HTTP_GET, .handler = docs_install_handler };
+    httpd_uri_t docs_readme_uri = { .uri = "/docs/readme", .method = HTTP_GET, .handler = docs_readme_handler };
+    httpd_uri_t docs_protocol_raw_uri = { .uri = "/docs/protocol/raw", .method = HTTP_GET, .handler = docs_protocol_raw_handler };
+    httpd_uri_t docs_install_raw_uri = { .uri = "/docs/install/raw", .method = HTTP_GET, .handler = docs_install_raw_handler };
+    httpd_uri_t docs_readme_raw_uri = { .uri = "/docs/readme/raw", .method = HTTP_GET, .handler = docs_readme_raw_handler };
 
     httpd_register_uri_handler(s_server, &root_uri);
     httpd_register_uri_handler(s_server, &status_uri);
@@ -1411,14 +2005,46 @@ esp_err_t web_server_start(void) {
     httpd_register_uri_handler(s_server, &upload_uri);
     httpd_register_uri_handler(s_server, &ble_start_uri);
     httpd_register_uri_handler(s_server, &ble_stop_uri);
+    httpd_register_uri_handler(s_server, &dump_config_uri);
     httpd_register_uri_handler(s_server, &set_model_uri);
     httpd_register_uri_handler(s_server, &set_battery_uri);
+    httpd_register_uri_handler(s_server, &set_name_uri);
     httpd_register_uri_handler(s_server, &set_prints_uri);
     httpd_register_uri_handler(s_server, &set_charging_uri);
     httpd_register_uri_handler(s_server, &set_suspend_decrement_uri);
     httpd_register_uri_handler(s_server, &set_cover_open_uri);
     httpd_register_uri_handler(s_server, &set_printer_busy_uri);
     httpd_register_uri_handler(s_server, &set_accel_uri);
+    httpd_register_uri_handler(s_server, &set_dis_uri);
+    httpd_register_uri_handler(s_server, &reset_dis_defaults_uri);
+    httpd_register_uri_handler(s_server, &reboot_uri);
+
+    // Register documentation handlers with error checking
+    ret = httpd_register_uri_handler(s_server, &docs_protocol_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register docs_protocol_uri: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Registered /docs/protocol handler");
+    }
+
+    ret = httpd_register_uri_handler(s_server, &docs_install_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register docs_install_uri: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Registered /docs/install handler");
+    }
+
+    ret = httpd_register_uri_handler(s_server, &docs_readme_uri);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register docs_readme_uri: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Registered /docs/readme handler");
+    }
+
+    // Register raw markdown handlers
+    httpd_register_uri_handler(s_server, &docs_protocol_raw_uri);
+    httpd_register_uri_handler(s_server, &docs_install_raw_uri);
+    httpd_register_uri_handler(s_server, &docs_readme_raw_uri);
 
     ESP_LOGI(TAG, "Web server started");
     return ESP_OK;

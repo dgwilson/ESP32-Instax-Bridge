@@ -119,6 +119,14 @@ typedef struct {
     // New discovered protocol features (December 2024)
     uint8_t auto_sleep_timeout;  // Auto-sleep timeout in minutes (0 = never, 1-255 = minutes)
     uint8_t print_mode;          // Print mode: 0x00 = Rich, 0x03 = Natural
+
+    // Device Information Service (BLE GATT) - per-model configurable
+    char model_number[16];       // BLE Model Number (e.g., "FI017", "FI033")
+    char serial_number[32];      // BLE Serial Number (e.g., "70423278")
+    char firmware_revision[16];  // BLE Firmware Revision (e.g., "0101")
+    char hardware_revision[16];  // BLE Hardware Revision (e.g., "0001")
+    char software_revision[16];  // BLE Software Revision (e.g., "0002")
+    char manufacturer_name[32];  // BLE Manufacturer Name (e.g., "FUJIFILM")
 } instax_printer_info_t;
 
 // Print Status

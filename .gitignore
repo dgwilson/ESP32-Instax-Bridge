@@ -32,3 +32,11 @@ __pycache__/
 
 # SPIFFS images (optional - may want to track these)
 # spiffs_image.bin
+
+# Packet captures (large binary files)
+*.pklg
+*.pcapng
+*.pcap
+
+# Session context files (working documents)
+SESSION_CONTEXT_*.md

@@ -20,3 +20,6 @@ idf_component_register(
         driver
         esp_driver_uart
 )
+
+# Create SPIFFS partition image from data directory
+spiffs_create_partition_image(spiffs ../data FLASH_IN_PROJECT)

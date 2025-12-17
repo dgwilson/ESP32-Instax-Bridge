@@ -54,6 +54,12 @@ esp_err_t printer_emulator_set_prints_remaining(uint8_t count);
 esp_err_t printer_emulator_set_charging(bool is_charging);
 
 /**
+ * Set device name (BLE advertising name)
+ * @param name Device name (e.g., "INSTAX-50196563" or "INSTAX-Simulator")
+ */
+esp_err_t printer_emulator_set_device_name(const char *name);
+
+/**
  * Set cover open/closed state (for error 179 simulation)
  */
 esp_err_t printer_emulator_set_cover_open(bool is_open);
@@ -111,6 +117,23 @@ esp_err_t printer_emulator_set_auto_sleep(uint8_t timeout_minutes);
 esp_err_t printer_emulator_set_print_mode(uint8_t mode);
 
 /**
+ * Set Device Information Service values (per-model configurable)
+ * These override the default values for the current model
+ */
+esp_err_t printer_emulator_set_model_number(const char *model_number);
+esp_err_t printer_emulator_set_serial_number(const char *serial_number);
+esp_err_t printer_emulator_set_firmware_revision(const char *firmware_revision);
+esp_err_t printer_emulator_set_hardware_revision(const char *hardware_revision);
+esp_err_t printer_emulator_set_software_revision(const char *software_revision);
+esp_err_t printer_emulator_set_manufacturer_name(const char *manufacturer_name);
+
+/**
+ * Reset Device Information Service values to model defaults
+ * Call this when switching printer models or to restore defaults
+ */
+esp_err_t printer_emulator_reset_dis_to_defaults(void);
+
+/**
  * Get printer model as string
  */
 const char* printer_emulator_model_to_string(instax_model_t model);
@@ -119,5 +142,11 @@ const char* printer_emulator_model_to_string(instax_model_t model);
  * Check if BLE is advertising
  */
 bool printer_emulator_is_advertising(void);
+
+/**
+ * Dump complete configuration to serial monitor
+ * Useful for debugging and diagnostics
+ */
+void printer_emulator_dump_config(void);
 
 #endif // PRINTER_EMULATOR_H

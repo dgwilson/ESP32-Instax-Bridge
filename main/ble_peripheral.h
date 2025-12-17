@@ -16,8 +16,9 @@
 /**
  * Callback for when a print job starts
  * @param image_size Expected size of the print image in bytes
+ * @return true if print job can be accepted, false if error (e.g., out of memory)
  */
-typedef void (*ble_peripheral_print_start_callback_t)(uint32_t image_size);
+typedef bool (*ble_peripheral_print_start_callback_t)(uint32_t image_size);
 
 /**
  * Callback for print data received
@@ -59,6 +60,12 @@ bool ble_peripheral_is_advertising(void);
 bool ble_peripheral_is_connected(void);
 
 /**
+ * Get the BLE MAC address being used for advertising
+ * @param mac_out Buffer to receive 6-byte MAC address (must be at least 6 bytes)
+ */
+void ble_peripheral_get_mac_address(uint8_t *mac_out);
+
+/**
  * Register callback for print start event
  */
 void ble_peripheral_register_print_start_callback(ble_peripheral_print_start_callback_t callback);
@@ -84,5 +91,11 @@ void ble_peripheral_update_device_name_with_ip(const char *ip_address);
  * @param ip_address IP address string (e.g., "192.168.1.101")
  */
 void ble_peripheral_update_model_number(instax_model_t model);
+
+/**
+ * Update all Device Information Service values from current printer info
+ * Call this when printer model changes to refresh DIS
+ */
+void ble_peripheral_update_dis_from_printer_info(void);
 
 #endif // BLE_PERIPHERAL_H

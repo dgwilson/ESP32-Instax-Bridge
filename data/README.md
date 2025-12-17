@@ -6,9 +6,8 @@ ESP32 firmware that **emulates** a Fujifilm Instax Link printer over Bluetooth L
 
 ## What This Does
 
-Your ESP32 **pretends to be** an Instax printer (Mini/Wide/Square). When your app (or any Instax-compatible app) tries to print a photo, it connects to the ESP32 instead of a real printer. The printer simulator was developed as a development aid to prove the print abilities of an application without wasting film continuously. Please see the section below on **current status** as it is important to understand what does not work as this this informs where more discovery and coding is required. The knowledge and protocol understanding here then aids in the development of other software.
+Your ESP32 **pretends to be** an Instax printer (Mini/Wide/Square). When your Moments app (or any Instax-compatible app) tries to print a photo, it connects to the ESP32 instead of a real printer. The ESP32:
 
-The ESP32:
 1. Advertises as "Instax-Mini Link" (or Wide/Square) over Bluetooth LE
 2. Accepts connections from photo apps using the authentic Instax BLE protocol
 3. Receives the print job data (JPEG image)
