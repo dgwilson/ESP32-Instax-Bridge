@@ -866,6 +866,8 @@ static const char *HTML_TEMPLATE =
 "            });\n"
 "        }\n"
 "\n"
+"        // Initialize page - load current printer info and system status\n"
+"        getPrinterInfo();\n"
 "        updateSystemInfo();\n"
 "        setInterval(updateSystemInfo, 5000); // Update every 5 seconds\n"
 "        refreshFiles();\n"

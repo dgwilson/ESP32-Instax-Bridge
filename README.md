@@ -364,6 +364,7 @@ State survives reboots and power cycles.
 This project implements the complete Instax BLE protocol based on:
 - [javl/InstaxBLE](https://github.com/javl/InstaxBLE) - Protocol reverse engineering
 - [jpwsutton/instax_api](https://github.com/jpwsutton/instax_api) - Python implementation
+- [jpwsutton/instax_api](https://github.com/jpwsutton/instax_api/issues/21#issuecomment-1352639100) - protocol discovery chat
 - Real device packet captures (see `Bluetooth Packet Capture/` folder)
 
 **📖 Complete Protocol Documentation:** See [INSTAX_PROTOCOL.md](INSTAX_PROTOCOL.md) for comprehensive protocol specification including:
