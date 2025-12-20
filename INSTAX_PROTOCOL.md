@@ -1765,7 +1765,7 @@ After extensive debugging with official INSTAX apps, the following requirements 
 | Model | 4th Byte | Example MAC | Real Hardware |
 |-------|----------|-------------|---------------|
 | Mini Link 3 | `0x86` | `fa:ab:bc:86:55:00` | `fa:ab:bc:86:18:4e` ✅ Verified |
-| Square Link | `0x87` | `fa:ab:bc:87:55:00` | Tested working ✅ |
+| Square Link | `0x87` | `fa:ab:bc:87:55:02` | Tested working ✅ |
 | Wide Link | `0x55` | `fa:ab:bc:55:55:01` | `fa:ab:bc:55:dd:c2` ✅ Verified (FI022) |
 
 **Required Pattern Components:**
@@ -1780,9 +1780,13 @@ After extensive debugging with official INSTAX apps, the following requirements 
 
 **Testing Results (December 2025):**
 - Mini with `fa:ab:bc:86:55:00` → Mini app discovers ✅
-- Square with `fa:ab:bc:87:55:00` → Square app discovers ✅
+- Square with `fa:ab:bc:87:55:02` → Square app discovers ✅
 - Wide with `fa:ab:bc:55:55:01` → Wide app discovers ✅
 - Wide with `fa:ab:bc:87:55:00` → Wide app FAILS ❌ (wrong pattern)
+
+**Note on MAC Suffixes:**
+Each model uses a unique last byte (:00, :02, :01) to prevent iOS BLE cache
+conflicts when switching between models during development and testing.
 
 **Why This Matters:**
 Each official app filters on specific MAC patterns. Using the wrong 4th byte means
@@ -2010,7 +2014,7 @@ Manufacturer: "FUJIFILM"
 
 ```c
 // BLE Configuration
-BLE Address: fa:ab:bc:87:55:00 (Random, Static)
+BLE Address: fa:ab:bc:87:55:02 (Random, Static)
 Advertising Flags: 0x05 (Limited Discoverable)
 TX Power: 3 dBm
 Device Name: "INSTAX-50555555(IOS)"
@@ -3136,8 +3140,9 @@ Time to execute: ~3-10 seconds depending on image size and BLE speed
   - Wide app specifically filters for 0x55 pattern - using 0x87 causes discovery failure
 - **Updated model-specific MAC patterns:**
   - Mini Link 3: `fa:ab:bc:86:55:00` (0x86 matches real hardware) ✅ VERIFIED
-  - Square Link: `fa:ab:bc:87:55:00` (0x87 tested working) ✅ VERIFIED
+  - Square Link: `fa:ab:bc:87:55:02` (0x87 tested working) ✅ VERIFIED
   - Wide Link: `fa:ab:bc:55:55:01` (0x55 from real FI022) ✅ VERIFIED
+  - Each model uses unique suffix to prevent iOS cache conflicts
 - **Device name updated:** "WIDE-205555" → "INSTAX-205555" (matches real printer format)
 - **Added detailed MAC pattern table** with common mistakes section
 - **iOS cache handling:** Use unique MAC suffix for each model to prevent cache conflicts
