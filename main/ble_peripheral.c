@@ -1951,29 +1951,37 @@ static void on_sync(void) {
     // Get current printer model to generate model-specific MAC
     const instax_printer_info_t *printer_info = printer_emulator_get_info();
 
-    // Model-specific MAC addresses (last byte differs per model):
-    // Mini:   fa:ab:bc:87:55:01
-    // Square: fa:ab:bc:87:55:02
-    // Wide:   fa:ab:bc:87:55:03
-    uint8_t model_byte;
+    // Model-specific MAC addresses (from real printer captures):
+    // Mini:   fa:ab:bc:86:55:00 (Real Mini uses 0x86) ✅ Works
+    // Square: fa:ab:bc:87:55:00 (Tested working) ✅ Works
+    // Wide:   fa:ab:bc:55:dd:c2 (Real Wide FI022 - EXACT MATCH)
+    uint8_t fourth_byte, fifth_byte, sixth_byte;
     switch (printer_info->model) {
         case INSTAX_MODEL_MINI:
-            model_byte = 0x01;
+            fourth_byte = 0x86;
+            fifth_byte = 0x55;
+            sixth_byte = 0x00;
             break;
         case INSTAX_MODEL_SQUARE:
-            model_byte = 0x02;
+            fourth_byte = 0x87;
+            fifth_byte = 0x55;
+            sixth_byte = 0x00;
             break;
         case INSTAX_MODEL_WIDE:
-            model_byte = 0x03;
+            fourth_byte = 0x55;  // Match real Wide pattern (not exact MAC to avoid iOS cache)
+            fifth_byte = 0x55;
+            sixth_byte = 0x01;   // Different from real printer (dd:c2) to avoid cache conflict
             break;
         default:
-            model_byte = 0x00;
+            fourth_byte = 0x87;
+            fifth_byte = 0x55;
+            sixth_byte = 0x00;
             break;
     }
 
-    addr.val[0] = model_byte;  // Least significant byte (rightmost) - MODEL SPECIFIC
-    addr.val[1] = 0x55;
-    addr.val[2] = 0x87;  // Critical byte - must be 0x8X for Mini/Wide app filtering
+    addr.val[0] = sixth_byte;
+    addr.val[1] = fifth_byte;
+    addr.val[2] = fourth_byte;  // Critical byte - MODEL SPECIFIC in 0x8X range
     addr.val[3] = 0xbc;
     addr.val[4] = 0xab;
     addr.val[5] = 0xfa;  // Most significant byte (leftmost in display)

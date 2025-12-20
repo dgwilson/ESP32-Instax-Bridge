@@ -223,8 +223,8 @@ esp_err_t printer_emulator_reset_dis_to_defaults(void) {
             strncpy(s_printer_info.hardware_revision, "0001", sizeof(s_printer_info.hardware_revision) - 1);
             strncpy(s_printer_info.software_revision, "0002", sizeof(s_printer_info.software_revision) - 1);
             strncpy(s_printer_info.manufacturer_name, "FUJIFILM", sizeof(s_printer_info.manufacturer_name) - 1);
-            // Shortened name for Wide (11 chars max) to fit E0FF UUID in scan response
-            strncpy(s_printer_info.device_name, "WIDE-205555", sizeof(s_printer_info.device_name) - 1);
+            // Wide device name format matches real printer pattern
+            strncpy(s_printer_info.device_name, "INSTAX-205555", sizeof(s_printer_info.device_name) - 1);
             break;
 
         default:
