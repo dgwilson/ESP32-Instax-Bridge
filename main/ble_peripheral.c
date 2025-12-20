@@ -1965,7 +1965,7 @@ static void on_sync(void) {
         case INSTAX_MODEL_SQUARE:
             fourth_byte = 0x87;
             fifth_byte = 0x55;
-            sixth_byte = 0x00;
+            sixth_byte = 0x02;  // Unique suffix to avoid iOS cache conflicts
             break;
         case INSTAX_MODEL_WIDE:
             fourth_byte = 0x55;  // Match real Wide pattern (not exact MAC to avoid iOS cache)
