@@ -13,6 +13,7 @@
 #include <errno.h>
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "nvs_flash.h"
 #include "cJSON.h"
 
 static const char *TAG = "web_server";
@@ -196,6 +197,46 @@ static const char *HTML_TEMPLATE =
 "                Suspend Print Count Decrement (Unlimited Testing)\n"
 "            </label>\n"
 "            <p style=\"font-size:0.85em;color:#666;margin:5px 0 0 0;\">When enabled, print count won't decrease after printing</p>\n"
+"        </div>\n"
+"        <div style=\"margin-top:20px;margin-bottom:15px;border-top:2px solid #FF9800;padding-top:15px;\">\n"
+"            <h3 style=\"margin-bottom:10px;color:#FF9800;\">🔐 BLE Security & Bonding</h3>\n"
+"            <div style=\"margin-bottom:15px;padding:12px;background:#fff3e0;border-left:4px solid #FF9800;border-radius:4px;\">\n"
+"                <p style=\"margin:0 0 8px 0;font-size:0.9em;\"><strong>What is Bonding?</strong></p>\n"
+"                <p style=\"margin:0 0 8px 0;font-size:0.85em;color:#666;\">\n"
+"                    Bonding stores encryption keys so your iPhone \"remembers\" the printer in Bluetooth Settings.\n"
+"                    Real INSTAX printers use bonding for persistent pairing.\n"
+"                </p>\n"
+"                <p style=\"margin:0 0 8px 0;font-size:0.9em;\"><strong>🛠️ Development Mode (Bonding OFF):</strong></p>\n"
+"                <p style=\"margin:0 0 8px 0;font-size:0.85em;color:#666;\">\n"
+"                    • Use this when <strong>testing/developing</strong><br>\n"
+"                    • <strong>Why?</strong> Every time you reflash the ESP32, its bonding database is cleared<br>\n"
+"                    • <strong>Problem:</strong> iOS still has old keys → connection fails with error 531<br>\n"
+"                    • <strong>Solution:</strong> Disable bonding = no pairing required = instant reconnect<br>\n"
+"                    • <strong>Drawback:</strong> Printer won't appear in iPhone Bluetooth Settings list\n"
+"                </p>\n"
+"                <p style=\"margin:0;font-size:0.9em;\"><strong>🔒 Real Printer Mode (Bonding ON):</strong></p>\n"
+"                <p style=\"margin:0;font-size:0.85em;color:#666;\">\n"
+"                    • Use this to <strong>test real printer behavior</strong><br>\n"
+"                    • Printer appears in iPhone Bluetooth Settings<br>\n"
+"                    • <strong>Note:</strong> If you reflash ESP32, you must \"Forget This Device\" on iPhone first\n"
+"                </p>\n"
+"            </div>\n"
+"            <div style=\"margin-bottom:15px;\">\n"
+"                <label>\n"
+"                    <input type=\"checkbox\" id=\"bonding-checkbox\" onchange=\"setBonding(this.checked)\">\n"
+"                    <strong>Enable BLE Bonding</strong> (requires ESP32 restart)\n"
+"                </label>\n"
+"                <p style=\"font-size:0.85em;color:#666;margin:5px 0 0 0;\">Current mode: <span id=\"bonding-status\" style=\"font-weight:bold;\">Loading...</span></p>\n"
+"            </div>\n"
+"            <div style=\"margin-bottom:15px;\">\n"
+"                <button onclick=\"clearBonds()\" style=\"background:#f44336;color:white;padding:8px 16px;border:none;border-radius:4px;cursor:pointer;\">\n"
+"                    Clear Bonding Database & Restart\n"
+"                </button>\n"
+"                <p style=\"font-size:0.85em;color:#666;margin:5px 0 0 0;\">\n"
+"                    Use this if connections fail with \"error 531\" or if iPhone can't forget the device.\n"
+"                    <br><strong>Important:</strong> Also go to iPhone Settings → Bluetooth → Forget This Device after clicking this button.\n"
+"                </p>\n"
+"            </div>\n"
 "        </div>\n"
 "        <div style=\"margin-top:20px;margin-bottom:15px;border-top:2px solid #4CAF50;padding-top:15px;\">\n"
 "            <h3 style=\"margin-bottom:10px;color:#4CAF50;\">Newly Discovered Features (Dec 2025)</h3>\n"
@@ -387,6 +428,17 @@ static const char *HTML_TEMPLATE =
 "                    document.getElementById('cover-open-checkbox').checked = d.cover_open || false;\n"
 "                    document.getElementById('printer-busy-checkbox').checked = d.printer_busy || false;\n"
 "\n"
+"                    // Update bonding status\n"
+"                    if (d.bonding_enabled !== undefined) {\n"
+"                        document.getElementById('bonding-checkbox').checked = d.bonding_enabled;\n"
+"                        const statusText = d.bonding_enabled ? \n"
+"                            '🔒 Enabled (Real Printer Mode)' : \n"
+"                            '🛠️ Disabled (Development Mode)';\n"
+"                        const statusColor = d.bonding_enabled ? '#d32f2f' : '#FF9800';\n"
+"                        document.getElementById('bonding-status').textContent = statusText;\n"
+"                        document.getElementById('bonding-status').style.color = statusColor;\n"
+"                    }\n"
+"\n"
 "                    // Update newly discovered protocol features display (Dec 2025)\n"
 "                    if (d.auto_sleep_timeout !== undefined) {\n"
 "                        const timeoutText = d.auto_sleep_timeout === 0 ? 'Never' : d.auto_sleep_timeout + ' minutes';\n"
@@ -562,6 +614,49 @@ static const char *HTML_TEMPLATE =
 "                  if(d.success) {\n"
 "                      console.log('Suspend decrement updated to: ' + suspend);\n"
 "                      getPrinterInfo();\n"
+"                  }\n"
+"              });\n"
+"        }\n"
+"\n"
+"        function setBonding(enabled) {\n"
+"            fetch('/api/set-bonding', {\n"
+"                method: 'POST',\n"
+"                headers: {'Content-Type': 'application/json'},\n"
+"                body: JSON.stringify({enabled: enabled})\n"
+"            }).then(r => r.json())\n"
+"              .then(d => {\n"
+"                  if(d.success) {\n"
+"                      console.log('Bonding setting saved: ' + enabled);\n"
+"                      alert('Bonding ' + (enabled ? 'ENABLED' : 'DISABLED') + '\\n\\nESP32 will restart now to apply changes.\\n\\n' + \n"
+"                            (enabled ? '⚠️ Important: If you reflash the ESP32 later, you must \"Forget This Device\" on iPhone first!' : \n"
+"                                       '✅ Development mode active. Reconnect without needing to forget device.'));\n"
+"                      // ESP32 will restart automatically\n"
+"                      setTimeout(() => { window.location.reload(); }, 3000);\n"
+"                  } else {\n"
+"                      alert('Failed to update bonding setting');\n"
+"                  }\n"
+"              });\n"
+"        }\n"
+"\n"
+"        function clearBonds() {\n"
+"            if(!confirm('This will:\\n' +\n"
+"                        '1. Clear all bonding keys from ESP32\\n' +\n"
+"                        '2. Restart the ESP32\\n' +\n"
+"                        '3. You MUST also \"Forget This Device\" on iPhone\\n\\n' +\n"
+"                        'Continue?')) {\n"
+"                return;\n"
+"            }\n"
+"            fetch('/api/clear-bonds', {\n"
+"                method: 'POST',\n"
+"                headers: {'Content-Type': 'application/json'},\n"
+"                body: JSON.stringify({})\n"
+"            }).then(r => r.json())\n"
+"              .then(d => {\n"
+"                  if(d.success) {\n"
+"                      alert('Bonding database cleared!\\n\\nESP32 will restart now.\\n\\n⚠️ Go to iPhone Settings → Bluetooth → \"Forget This Device\" NOW!');\n"
+"                      setTimeout(() => { window.location.reload(); }, 3000);\n"
+"                  } else {\n"
+"                      alert('Failed to clear bonding database');\n"
 "                  }\n"
 "              });\n"
 "        }\n"
@@ -985,6 +1080,16 @@ static esp_err_t api_printer_info_handler(httpd_req_t *req) {
     // Add error simulation states
     cJSON_AddBoolToObject(root, "cover_open", info->cover_open);
     cJSON_AddBoolToObject(root, "printer_busy", info->printer_busy);
+
+    // Add bonding status (read from NVS)
+    nvs_handle_t nvs_handle;
+    uint8_t bonding_enabled = 1;  // Default: enabled (matches real printer)
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK) {
+        nvs_get_u8(nvs_handle, "ble_bonding", &bonding_enabled);
+        nvs_close(nvs_handle);
+    }
+    cJSON_AddBoolToObject(root, "bonding_enabled", bonding_enabled != 0);
 
     // Add newly discovered protocol features (Dec 2025)
     cJSON_AddNumberToObject(root, "auto_sleep_timeout", info->auto_sleep_timeout);
@@ -1722,6 +1827,105 @@ static esp_err_t api_set_suspend_decrement_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// Handler for setting BLE bonding enabled/disabled
+static esp_err_t api_set_bonding_handler(httpd_req_t *req) {
+    char buf[100];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request");
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    cJSON *json = cJSON_Parse(buf);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *enabled_item = cJSON_GetObjectItem(json, "enabled");
+    if (!enabled_item || !cJSON_IsBool(enabled_item)) {
+        cJSON_Delete(json);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing or invalid enabled status");
+        return ESP_FAIL;
+    }
+
+    bool enabled = cJSON_IsTrue(enabled_item);
+
+    // Save bonding preference to NVS
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK) {
+        nvs_set_u8(nvs_handle, "ble_bonding", enabled ? 1 : 0);
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+        ESP_LOGI("WEB", "Bonding preference saved: %s", enabled ? "ENABLED" : "DISABLED");
+    } else {
+        ESP_LOGE("WEB", "Failed to open NVS for bonding preference");
+    }
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "success", err == ESP_OK);
+    char *response_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, response_str, strlen(response_str));
+
+    free(response_str);
+    cJSON_Delete(response);
+    cJSON_Delete(json);
+
+    // Restart ESP32 to apply bonding changes
+    if (err == ESP_OK) {
+        ESP_LOGI("WEB", "Restarting ESP32 to apply bonding changes...");
+        vTaskDelay(pdMS_TO_TICKS(1000));  // Give time for response to send
+        esp_restart();
+    }
+
+    return ESP_OK;
+}
+
+// Handler for clearing bonding database
+static esp_err_t api_clear_bonds_handler(httpd_req_t *req) {
+    char buf[100];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request");
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    ESP_LOGI("WEB", "Clearing bonding database...");
+
+    // Clear NimBLE bond storage
+    extern int ble_store_clear(void);
+    int rc = ble_store_clear();
+
+    esp_err_t result = (rc == 0) ? ESP_OK : ESP_FAIL;
+    if (result == ESP_OK) {
+        ESP_LOGI("WEB", "Bonding database cleared successfully");
+    } else {
+        ESP_LOGE("WEB", "Failed to clear bonding database: %d", rc);
+    }
+
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "success", result == ESP_OK);
+    char *response_str = cJSON_Print(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, response_str, strlen(response_str));
+
+    free(response_str);
+    cJSON_Delete(response);
+
+    // Restart ESP32 after clearing bonds
+    if (result == ESP_OK) {
+        ESP_LOGI("WEB", "Restarting ESP32 after clearing bonds...");
+        vTaskDelay(pdMS_TO_TICKS(1000));  // Give time for response to send
+        esp_restart();
+    }
+
+    return ESP_OK;
+}
+
 // Handler for setting cover open/closed state
 static esp_err_t api_set_cover_open_handler(httpd_req_t *req) {
     char buf[100];
@@ -1956,7 +2160,7 @@ esp_err_t web_server_start(void) {
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 32;  // Increased for printer settings, DIS endpoints, and documentation
+    config.max_uri_handlers = 34;  // Increased for printer settings, DIS endpoints, bonding control, and documentation
     config.stack_size = 8192;
     config.uri_match_fn = httpd_uri_match_wildcard;  // Enable wildcard matching for /api/files/*
 
@@ -1984,6 +2188,8 @@ esp_err_t web_server_start(void) {
     httpd_uri_t set_prints_uri = { .uri = "/api/set-prints", .method = HTTP_POST, .handler = api_set_prints_handler };
     httpd_uri_t set_charging_uri = { .uri = "/api/set-charging", .method = HTTP_POST, .handler = api_set_charging_handler };
     httpd_uri_t set_suspend_decrement_uri = { .uri = "/api/set-suspend-decrement", .method = HTTP_POST, .handler = api_set_suspend_decrement_handler };
+    httpd_uri_t set_bonding_uri = { .uri = "/api/set-bonding", .method = HTTP_POST, .handler = api_set_bonding_handler };
+    httpd_uri_t clear_bonds_uri = { .uri = "/api/clear-bonds", .method = HTTP_POST, .handler = api_clear_bonds_handler };
     httpd_uri_t set_cover_open_uri = { .uri = "/api/set-cover-open", .method = HTTP_POST, .handler = api_set_cover_open_handler };
     httpd_uri_t set_printer_busy_uri = { .uri = "/api/set-printer-busy", .method = HTTP_POST, .handler = api_set_printer_busy_handler };
     httpd_uri_t set_accel_uri = { .uri = "/api/set-accelerometer", .method = HTTP_POST, .handler = api_set_accelerometer_handler };
@@ -2014,6 +2220,8 @@ esp_err_t web_server_start(void) {
     httpd_register_uri_handler(s_server, &set_prints_uri);
     httpd_register_uri_handler(s_server, &set_charging_uri);
     httpd_register_uri_handler(s_server, &set_suspend_decrement_uri);
+    httpd_register_uri_handler(s_server, &set_bonding_uri);
+    httpd_register_uri_handler(s_server, &clear_bonds_uri);
     httpd_register_uri_handler(s_server, &set_cover_open_uri);
     httpd_register_uri_handler(s_server, &set_printer_busy_uri);
     httpd_register_uri_handler(s_server, &set_accel_uri);
