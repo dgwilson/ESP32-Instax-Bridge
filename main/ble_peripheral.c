@@ -49,6 +49,7 @@ static uint8_t custom_mac[6] = {0x1C, 0x7D, 0x22, 0x55, 0x55, 0x00};
 // BLE state
 static bool s_advertising = false;
 static bool s_connected = false;
+static bool s_bonding_enabled = true;  // Bonding preference (loaded from NVS at init)
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_notify_handle = 0;
 
@@ -820,52 +821,79 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                             response[6] = 0x00; // Payload header byte 0
                             response[7] = 0x02; // Payload header byte 1 (matches query type)
 
-                            // Capability byte encoding:
-                            // All models encode film count in lower 4 bits!
-                            // The "constant 0x15" for Wide was captured when the printer had 5 films (0x10 | 5)
-                            // Mini/Square/Wide: Bits 0-3: Photos remaining (0-10), Bits 4-6: Model flags, Bit 7: Charging
+                            // Capability byte encoding (VERIFIED with real printers Dec 2024):
+                            // Format: [Bit 7: Charging] [Bits 4-6: Model flags] [Bits 0-3: Photos remaining 0-10]
+                            //
+                            // WIDE LINK (FI022): Base 0x30 (0011 0000) - CORRECTED Dec 20, 2024
+                            //   Real printer with 4 films: 0x34 = 0x30 | 0x04
+                            //   Film count stored in LOWER NIBBLE (bits 0-3) of capability byte
+                            //   Moments Print reads payload[2] & 0x0F for Wide
+                            //
+                            // SQUARE LINK (FI017): Base 0x20 (0010 0000)
+                            //   Real printer with 12 films: 0x2C = 0x20 | 0x0C
+                            //   Film count stored in FULL BYTE at payload[5]
+                            //   Moments Print reads payload[5] for Square
+                            //
+                            // MINI LINK 3 (FI033): Base 0x30 (0011 0000)
+                            //   Film count encoding unknown (needs testing)
                             uint8_t capability;
                             uint8_t film_count = info->photos_remaining;
                             if (film_count > 10) film_count = 10;
 
                             if (info->model == INSTAX_MODEL_WIDE) {
-                                // Wide Link base flags: 0001 0000 (0x10)
-                                // Real printer with 5 films showed 0x15 = 0x10 | 5
-                                capability = 0x10 | (film_count & 0x0F);
+                                // Wide Link base flags: 0011 0000 (0x30) - VERIFIED with real FI022
+                                capability = 0x30 | (film_count & 0x0F);
                             } else if (info->model == INSTAX_MODEL_MINI) {
-                                // Mini Link 3 base flags: 0011 0000 (0x30)
+                                // Mini Link 3 base flags: 0011 0000 (0x30) - needs verification
                                 capability = 0x30 | (film_count & 0x0F);
                             } else if (info->model == INSTAX_MODEL_SQUARE) {
-                                // Square Link base flags: 0010 0000 (0x20)
+                                // Square Link base flags: 0010 0000 (0x20) - VERIFIED with real FI017
                                 capability = 0x20 | (film_count & 0x0F);
                             } else {
                                 // Default to Square pattern
                                 capability = 0x20 | (film_count & 0x0F);
                             }
 
-                            // Apply charging bit for all models
+                            // Apply charging bit for all models (bit 7)
                             if (info->is_charging) {
                                 capability |= 0x80;  // Set bit 7 for charging
                             }
                             response[8] = capability;
 
-                            response[9] = 0x00;  // Byte 2
-                            response[10] = 0x00; // Byte 3
-                            response[11] = info->photos_remaining; // Legacy film count byte (for Moments Print)
-                            response[12] = 0x00; // Extra byte 1
-                            response[13] = 0x00; // Extra byte 2
-                            response[14] = 0x00; // Extra byte 3
-                            response[15] = 0x00; // Extra byte 4
+                            response[9] = 0x00;  // Reserved byte 1
+                            response[10] = 0x00; // Reserved byte 2
+
+                            // Payload[5] behavior differs by model:
+                            // - Square/Mini: Contains actual film count (Moments Print reads this)
+                            // - Wide: Unknown purpose (Moments Print reads capability byte instead)
+                            if (info->model == INSTAX_MODEL_WIDE) {
+                                // Wide: Real printer sends 0x0C here when 4 films remain (meaning unknown)
+                                // Possibly total pack capacity or calibration value?
+                                response[11] = 0x0C; // Match real printer behavior
+                            } else {
+                                // Square/Mini: Actual film count
+                                response[11] = info->photos_remaining;
+                            }
+
+                            response[12] = 0x00; // Padding byte 1
+                            response[13] = 0x00; // Padding byte 2
+                            response[14] = 0x00; // Padding byte 3
+                            response[15] = 0x00; // Padding byte 4
                             response_len = 16; // Header(2) + Length(2) + Func(1) + Op(1) + Payload(10) = 16, checksum added later
 
                             // Debug: Log the exact payload bytes
                             ESP_LOGI(TAG, "  Payload bytes: [0-1]=0x%02x%02x [2]=0x%02x [3-4]=0x%02x%02x [5]=0x%02x [6-9]=0x%02x%02x%02x%02x",
                                     response[6], response[7], response[8], response[9], response[10],
                                     response[11], response[12], response[13], response[14], response[15]);
-                            ESP_LOGI(TAG, "  → Capability byte 0x%02x = film count %d in lower nibble",
-                                    capability, capability & 0x0F);
-                            ESP_LOGI(TAG, "  → Moments Print reads payload[5] = %d",
-                                    response[11]);
+                            if (info->model == INSTAX_MODEL_WIDE) {
+                                ESP_LOGI(TAG, "  → WIDE: Capability byte 0x%02x, film count %d in lower nibble (payload[2] & 0x0F)",
+                                        capability, capability & 0x0F);
+                                ESP_LOGI(TAG, "  → WIDE: payload[5] = 0x%02x (unknown purpose, matches real printer)",
+                                        response[11]);
+                            } else {
+                                ESP_LOGI(TAG, "  → SQUARE/MINI: Capability byte 0x%02x, film count %d at payload[5]",
+                                        capability, response[11]);
+                            }
                             break;
 
                         case INSTAX_INFO_PRINT_HISTORY:
@@ -1564,13 +1592,17 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
                 s_connected = true;
                 s_conn_handle = event->connect.conn_handle;
 
-                // Send security request to initiate bonding (matches real INSTAX printer)
-                // Real printer sends this ~90ms after connection
-                int rc = ble_gap_security_initiate(event->connect.conn_handle);
-                if (rc == 0) {
-                    ESP_LOGI(TAG, "Security request sent (bonding initiation)");
+                // Conditionally send security request based on bonding preference
+                // Real printer sends this ~90ms after connection when bonding is enabled
+                if (s_bonding_enabled) {
+                    int rc = ble_gap_security_initiate(event->connect.conn_handle);
+                    if (rc == 0) {
+                        ESP_LOGI(TAG, "🔒 Security request sent (bonding initiation)");
+                    } else {
+                        ESP_LOGW(TAG, "Failed to send security request: %d", rc);
+                    }
                 } else {
-                    ESP_LOGW(TAG, "Failed to send security request: %d", rc);
+                    ESP_LOGI(TAG, "🛠️  Bonding disabled - skipping security request (development mode)");
                 }
             } else {
                 // Connection failed, resume advertising
@@ -2258,16 +2290,33 @@ esp_err_t ble_peripheral_init(void) {
     ble_hs_cfg.reset_cb = on_reset;
     ble_hs_cfg.gatts_register_cb = NULL;
 
-    // Configure Security Manager (matches real INSTAX printer behavior)
-    // From packet capture: AuthReq = 0x01 (Bonding, no MITM, no SC)
-    ble_hs_cfg.sm_bonding = 1;              // Enable bonding
-    ble_hs_cfg.sm_mitm = 0;                 // No Man-in-the-Middle protection
-    ble_hs_cfg.sm_sc = 0;                   // No Secure Connections (use legacy pairing)
+    // Configure Security Manager - read bonding preference from NVS
+    // Default: ENABLED (matches real INSTAX printer behavior)
+    // User can disable via web interface for development/testing
+    uint8_t bonding_enabled = 1;  // Default: enabled
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK) {
+        nvs_get_u8(nvs_handle, "ble_bonding", &bonding_enabled);
+        nvs_close(nvs_handle);
+    }
+
+    ble_hs_cfg.sm_bonding = bonding_enabled;   // Configurable bonding
+    ble_hs_cfg.sm_mitm = 0;                     // No Man-in-the-Middle protection
+    ble_hs_cfg.sm_sc = 0;                       // No Secure Connections (use legacy pairing)
     ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;  // No input/output (Just Works pairing)
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
 
-    ESP_LOGI(TAG, "Security Manager configured: bonding=1, mitm=0, sc=0, io_cap=NoIO");
+    // Store bonding preference in static variable for use in connection handler
+    s_bonding_enabled = bonding_enabled;
+
+    ESP_LOGI(TAG, "Security Manager configured: bonding=%d, mitm=0, sc=0, io_cap=NoIO", bonding_enabled);
+    if (bonding_enabled) {
+        ESP_LOGI(TAG, "🔒 Bonding ENABLED - Real printer mode (appears in iPhone Bluetooth Settings)");
+    } else {
+        ESP_LOGI(TAG, "🛠️  Bonding DISABLED - Development mode (instant reconnect after reflash)");
+    }
 
     // Initialize bond storage - required for iOS to remember device in Bluetooth settings
     ble_store_config_init();
