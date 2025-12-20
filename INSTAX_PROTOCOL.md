@@ -1756,26 +1756,39 @@ After extensive debugging with official INSTAX apps, the following requirements 
 
 ### 1. BLE Address Whitelist (MOST CRITICAL)
 
-**Discovery:** Mini and Wide apps implement strict BLE address filtering. Square app is more permissive.
+**Discovery:** Each printer model uses a **DIFFERENT** MAC pattern for app filtering.
 
-**Required Pattern:** `fa:ab:bc:8X:XX:XX`
+**⚠️ CRITICAL: Wide Uses Different Pattern Than Mini/Square!**
+
+**Model-Specific MAC Patterns:**
+
+| Model | 4th Byte | Example MAC | Real Hardware |
+|-------|----------|-------------|---------------|
+| Mini Link 3 | `0x86` | `fa:ab:bc:86:55:00` | `fa:ab:bc:86:18:4e` ✅ Verified |
+| Square Link | `0x87` | `fa:ab:bc:87:55:00` | Tested working ✅ |
+| Wide Link | `0x55` | `fa:ab:bc:55:55:01` | `fa:ab:bc:55:dd:c2` ✅ Verified (FI022) |
+
+**Required Pattern Components:**
 - First 3 bytes: **MUST** be `fa:ab:bc` (INSTAX manufacturer prefix)
-- 4th byte: **MUST** be `0x8X` (e.g., 0x80-0x8F range)
-- Last 2 bytes: Can be anything
+- 4th byte: **Model-specific** (see table above)
+- Last 2 bytes: Can be anything (use unique values to avoid iOS cache conflicts)
 
-**Examples:**
-- ✅ `fa:ab:bc:87:55:00` - Works with all apps
-- ✅ `fa:ab:bc:86:18:4e` - Real Mini Link 3
-- ✅ `fa:ab:bc:80:00:00` - Would work
-- ❌ `fa:ab:bc:55:55:00` - Only Square app can see this
-- ❌ `fa:ab:bc:75:00:00` - Only Square app can see this
+**Common Mistakes:**
+- ❌ `fa:ab:bc:87:55:00` for Wide - Uses Mini/Square pattern, Wide app won't discover
+- ❌ `fa:ab:bc:8X:XX:XX` for Wide - Wrong! Wide requires 0x55, not 0x8X range
+- ❌ `fa:ab:bc:75:00:00` - Invalid pattern for any model
 
-**Testing Results:**
-- Address `fa:ab:bc:55:55:00` → Only Square app detected it
-- Address `fa:ab:bc:87:55:00` → All three apps detected it
+**Testing Results (December 2025):**
+- Mini with `fa:ab:bc:86:55:00` → Mini app discovers ✅
+- Square with `fa:ab:bc:87:55:00` → Square app discovers ✅
+- Wide with `fa:ab:bc:55:55:01` → Wide app discovers ✅
+- Wide with `fa:ab:bc:87:55:00` → Wide app FAILS ❌ (wrong pattern)
 
 **Why This Matters:**
-Without the correct address range, Mini/Wide apps will **never discover** the printer, even if all other parameters are perfect.
+Each official app filters on specific MAC patterns. Using the wrong 4th byte means
+the app will **never discover** your device, even if all other parameters are perfect.
+Wide specifically requires 0x55 - this was confirmed via Wireshark capture of real
+FI022 hardware.
 
 ### 2. Serial Number Patterns (Model Detection)
 
@@ -1973,10 +1986,10 @@ Manufacturer: "FUJIFILM"
 
 ```c
 // BLE Configuration
-BLE Address: fa:ab:bc:87:55:00 (Random, Static)
+BLE Address: fa:ab:bc:55:55:01 (Random, Static) - CRITICAL: 0x55, NOT 0x87!
 Advertising Flags: 0x05 (Limited Discoverable)
 TX Power: 0 dBm
-Device Name: "INSTAX-20555555(IOS)"
+Device Name: "INSTAX-205555"
 Manufacturer Data: D8 04 02 00
 
 // Device Information Service
@@ -3114,6 +3127,20 @@ Time to execute: ~3-10 seconds depending on image size and BLE speed
 ---
 
 ## Changelog
+
+### December 2025 (Wide Link MAC Address Discovery)
+- **CRITICAL DISCOVERY: Wide Link uses DIFFERENT MAC pattern than Mini/Square**
+  - Real Wide FI022 hardware uses `fa:ab:bc:55:dd:c2` (captured via Wireshark)
+  - 4th byte is **0x55**, NOT 0x8X range like Mini/Square
+  - Previous documentation incorrectly stated 0x8X was required for Wide app filtering
+  - Wide app specifically filters for 0x55 pattern - using 0x87 causes discovery failure
+- **Updated model-specific MAC patterns:**
+  - Mini Link 3: `fa:ab:bc:86:55:00` (0x86 matches real hardware) ✅ VERIFIED
+  - Square Link: `fa:ab:bc:87:55:00` (0x87 tested working) ✅ VERIFIED
+  - Wide Link: `fa:ab:bc:55:55:01` (0x55 from real FI022) ✅ VERIFIED
+- **Device name updated:** "WIDE-205555" → "INSTAX-205555" (matches real printer format)
+- **Added detailed MAC pattern table** with common mistakes section
+- **iOS cache handling:** Use unique MAC suffix for each model to prevent cache conflicts
 
 ### December 2025 (Square Link Film Count Discovery)
 - **CRITICAL DISCOVERY: Square Link uses capability byte nibble encoding** (same as Wide Link)
