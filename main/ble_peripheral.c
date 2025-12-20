@@ -863,15 +863,17 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                             response[9] = 0x00;  // Reserved byte 1
                             response[10] = 0x00; // Reserved byte 2
 
-                            // Payload[5] behavior differs by model:
-                            // - Square/Mini: Contains actual film count (Moments Print reads this)
-                            // - Wide: Unknown purpose (Moments Print reads capability byte instead)
-                            if (info->model == INSTAX_MODEL_WIDE) {
-                                // Wide: Real printer sends 0x0C here when 4 films remain (meaning unknown)
-                                // Possibly total pack capacity or calibration value?
+                            // Payload[5] behavior differs by model (UPDATED Dec 2024):
+                            // - Square: Sends 0x0C (unknown purpose, NOT film count) - VERIFIED with real FI017
+                            // - Wide: Sends 0x0C (unknown purpose, NOT film count) - VERIFIED with real FI022
+                            // - Older Mini 1/2: Contains actual film count (capability byte 0x10-0x1F range)
+                            // Both Square and Wide use capability byte lower nibble for film count!
+                            if (info->model == INSTAX_MODEL_WIDE || info->model == INSTAX_MODEL_SQUARE) {
+                                // Square/Wide: Real printers send 0x0C here regardless of film count
+                                // Possibly total pack capacity (10 sheets + 2 calibration = 12?)
                                 response[11] = 0x0C; // Match real printer behavior
                             } else {
-                                // Square/Mini: Actual film count
+                                // Older Mini 1/2: Actual film count in payload[5]
                                 response[11] = info->photos_remaining;
                             }
 
@@ -1938,18 +1940,40 @@ static void ble_host_task(void *param) {
 static void on_sync(void) {
     ESP_LOGI(TAG, "BLE host synced");
 
-    // Set a static random BLE address to match real INSTAX printer behavior
+    // Set a model-specific random BLE address to match real INSTAX printer behavior
     // Real INSTAX printers use the pattern: fa:ab:bc:XX:YY:ZZ
     // where fa:ab:bc is the fixed prefix and XX:YY:ZZ is device-specific
-    // (likely derived from serial number or device ID)
+    //
+    // CRITICAL: Different MAC for each model forces iOS to clear BLE cache on model change
+    // This prevents iOS from showing cached old device names after model changes
     ble_addr_t addr;
 
-    // Use fa:ab:bc:87:55:00 to match Mini address range
-    // Real Mini uses fa:ab:bc:86:XX:XX - Mini/Wide apps filter on 0x8X range
-    // Format: fa:ab:bc:87:55:00
-    addr.val[0] = 0x00;  // Least significant byte (rightmost in display)
+    // Get current printer model to generate model-specific MAC
+    const instax_printer_info_t *printer_info = printer_emulator_get_info();
+
+    // Model-specific MAC addresses (last byte differs per model):
+    // Mini:   fa:ab:bc:87:55:01
+    // Square: fa:ab:bc:87:55:02
+    // Wide:   fa:ab:bc:87:55:03
+    uint8_t model_byte;
+    switch (printer_info->model) {
+        case INSTAX_MODEL_MINI:
+            model_byte = 0x01;
+            break;
+        case INSTAX_MODEL_SQUARE:
+            model_byte = 0x02;
+            break;
+        case INSTAX_MODEL_WIDE:
+            model_byte = 0x03;
+            break;
+        default:
+            model_byte = 0x00;
+            break;
+    }
+
+    addr.val[0] = model_byte;  // Least significant byte (rightmost) - MODEL SPECIFIC
     addr.val[1] = 0x55;
-    addr.val[2] = 0x87;  // Changed from 0x55 to 0x87 to match Mini whitelist range
+    addr.val[2] = 0x87;  // Critical byte - must be 0x8X for Mini/Wide app filtering
     addr.val[3] = 0xbc;
     addr.val[4] = 0xab;
     addr.val[5] = 0xfa;  // Most significant byte (leftmost in display)
@@ -1997,20 +2021,21 @@ static int link3_info_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         }
         else if (ble_uuid_cmp(uuid, &link3_fff1_uuid.u) == 0) {
             // FFF1 - Contains battery and film count for Link 3
-            // Format from INSTAX_PROTOCOL.md:
-            // Byte 0: Photos remaining (0-10)
+            // Format from INSTAX_PROTOCOL.md (VERIFIED Dec 2024):
+            // Byte 0: Photos USED (0-10) - NOT remaining!
             // Byte 8: Battery level (raw, 0-200 scale)
             // Byte 9: Charging status (0xFF = NOT charging)
             uint8_t fff1_data[12] = {0};
-            fff1_data[0] = (uint8_t)printer_info->photos_remaining;  // Photos left
+            fff1_data[0] = (uint8_t)(10 - printer_info->photos_remaining);  // Photos USED (not remaining!)
             fff1_data[1] = 0x01;
             fff1_data[3] = 0x15;  // Some status byte
             fff1_data[6] = 0x4F;  // Some status byte
             fff1_data[8] = (uint8_t)((printer_info->battery_percentage * 200) / 100);  // Battery (0-200 scale)
             fff1_data[9] = printer_info->is_charging ? 0x00 : 0xFF;  // 0xFF = NOT charging
             fff1_data[10] = 0x0F;
-            ESP_LOGI(TAG, "Link3 Info: FFF1 read - %d photos, %d%% battery",
-                     printer_info->photos_remaining, printer_info->battery_percentage);
+            uint8_t photos_used = fff1_data[0];
+            ESP_LOGI(TAG, "Link3 Info: FFF1 read - %d used, %d remaining, %d%% battery",
+                     photos_used, printer_info->photos_remaining, printer_info->battery_percentage);
             return os_mbuf_append(ctxt->om, fff1_data, sizeof(fff1_data));
         }
         else if (ble_uuid_cmp(uuid, &link3_ffd1_uuid.u) == 0) {

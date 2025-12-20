@@ -41,6 +41,25 @@ The ESP32-Instax-Bridge is a BLE peripheral that emulates a Fujifilm INSTAX prin
    - Documentation reference only
    - Do NOT edit or build from this location
 
+**⚠️ INSTAX_PROTOCOL.md Authoritative Source:**
+
+The `INSTAX_PROTOCOL.md` protocol documentation also exists in two locations, but **THIS directory contains the authoritative master version:**
+
+1. **AUTHORITATIVE (Master - THIS FILE):** `/Users/dgwilson/Projects/ESP32-Instax-Bridge/INSTAX_PROTOCOL.md`
+   - **This is the ONLY version to edit**
+   - Contains all latest protocol discoveries and updates (December 2025)
+   - Most comprehensive and up-to-date INSTAX BLE protocol documentation
+   - Includes Wide Link FFE1 fixes, Square Link film count discovery, Link 3 FFF1 parsing
+
+2. **COPY (Synchronized):** `/Users/dgwilson/Desktop/Projects/Moments Project Suite/Moments Print/INSTAX_PROTOCOL.md`
+   - Read-only reference copy for Moments Print app developers
+   - Periodically synced FROM this primary location
+   - Do NOT edit - changes will be overwritten
+
+**When updating INSTAX protocol documentation:**
+- Always edit the version in THIS directory (`/Users/dgwilson/Projects/ESP32-Instax-Bridge/INSTAX_PROTOCOL.md`)
+- Copy to Moments Print location when needed: `cp INSTAX_PROTOCOL.md "/Users/dgwilson/Desktop/Projects/Moments Project Suite/Moments Print/INSTAX_PROTOCOL.md"`
+
 ### Build Commands
 
 ```bash

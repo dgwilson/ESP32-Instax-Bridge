@@ -397,7 +397,8 @@ static const char *HTML_TEMPLATE =
 "                        '<div>Battery: ' + d.battery + '%' + (d.charging ? ' (Charging)' : '') + '</div>' +\n"
 "                        '<div>Photos: ' + d.photos_remaining + ' remaining</div>' +\n"
 "                        '<div>Resolution: ' + d.width + 'x' + d.height + '</div>' +\n"
-"                        '<div>Lifetime: ' + d.lifetime_prints + ' prints</div>';\n"
+"                        '<div>Lifetime: ' + d.lifetime_prints + ' prints</div>' +\n"
+"                        '<div><strong>BLE MAC:</strong> <code>' + (d.ble_mac || 'Unknown') + '</code></div>';\n"
 "                    info.style.display = 'grid';\n"
 "\n"
 "                    // Update UI controls to match current state\n"
@@ -1068,6 +1069,14 @@ static esp_err_t api_printer_info_handler(httpd_req_t *req) {
     cJSON_AddNumberToObject(root, "lifetime_prints", info->lifetime_print_count);
     cJSON_AddBoolToObject(root, "advertising", ble_peripheral_is_advertising());
     cJSON_AddBoolToObject(root, "connected", ble_peripheral_is_connected());
+
+    // Add BLE MAC address (useful for packet tracing)
+    uint8_t mac[6];
+    ble_peripheral_get_mac_address(mac);
+    char mac_str[18];
+    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    cJSON_AddStringToObject(root, "ble_mac", mac_str);
 
     // Add accelerometer data
     cJSON *accel = cJSON_CreateObject();

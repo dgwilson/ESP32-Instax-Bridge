@@ -469,6 +469,10 @@ esp_err_t printer_emulator_set_model(instax_model_t model) {
     // Reset Device Information Service values to model-specific defaults
     printer_emulator_reset_dis_to_defaults();
 
+    // CRITICAL: Save updated device name and DIS values to NVS
+    // Without this, old device name persists across reboots (e.g., WIDE-205555 when model is Square)
+    save_state_to_nvs();
+
     ESP_LOGI(TAG, "Model set to %s (%dx%d)",
              printer_emulator_model_to_string(model),
              s_printer_info.width, s_printer_info.height);

@@ -16,6 +16,8 @@
 #include "driver/uart_vfs.h"
 #include "linenoise/linenoise.h"
 #include "argtable3/argtable3.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "console";
 
@@ -186,6 +188,18 @@ static int cmd_printer_model(int argc, char **argv) {
         printf("Printer model set to %s (%dx%d)\n",
                printer_emulator_model_to_string(model),
                info->width, info->height);
+
+        // Countdown before reboot to apply new MAC address
+        printf("\n⚠️  Rebooting in ");
+        for (int i = 10; i > 0; i--) {
+            printf("%d... ", i);
+            fflush(stdout);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        printf("\n\n🔄 Rebooting to apply new BLE MAC address...\n");
+        fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(100));  // Brief delay to flush output
+        esp_restart();
     } else {
         printf("Failed to set model: %s\n", esp_err_to_name(ret));
     }
@@ -596,6 +610,16 @@ static void register_commands(void) {
         .argtable = &printer_model_args
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&printer_model_cmd));
+
+    // Add shorter 'model' alias for convenience
+    const esp_console_cmd_t model_cmd = {
+        .command = "model",
+        .help = "Set printer model (alias for printer_model)",
+        .hint = NULL,
+        .func = &cmd_printer_model,
+        .argtable = &printer_model_args
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&model_cmd));
 
     // printer_battery command
     printer_battery_args.percentage = arg_int1(NULL, NULL, "<0-100>", "Battery percentage");
