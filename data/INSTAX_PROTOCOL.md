@@ -344,7 +344,7 @@ When querying device information using `DEVICE_INFO_SERVICE` (0x00, 0x01), the *
 |-----------|-----------|----------------|-------------|
 | `IMAGE_SUPPORT_INFO` | `0x00` | `[W_H, W_L, H_H, H_L]` | Image dimensions (16-bit width, 16-bit height) |
 | `BATTERY_INFO` | `0x01` | `[State, Percentage]` | Battery state and charge percentage (0-100)<br>**⚠️ Model-specific:** Byte 8 = `0x01` (Wide), `0x03` (Mini/Square) |
-| `PRINTER_FUNCTION_INFO` | `0x02` | `[FunctionByte]` | Photos remaining (bits 0-3), charging flag (bit 7)<br>**⚠️ Wide exception:** Capability = constant `0x15`, photos only in byte 11 |
+| `PRINTER_FUNCTION_INFO` | `0x02` | `[FunctionByte]` | Photos remaining (bits 0-3), charging flag (bit 7)<br>**⚠️ Model-specific:** Square/Wide use capability byte nibble, older Mini uses payload[5] - see parsing section below |
 | `PRINT_HISTORY_INFO` | `0x03` | (varies) | Print history data |
 
 ### Parsing Info Responses
@@ -365,10 +365,72 @@ let batteryLevel = payload[1]    // Percentage 0-100
 ```
 
 #### Printer Function Info (Operation 0x02)
+
+**⚠️ CRITICAL: Model-Specific Film Count Encoding (Updated December 2025)**
+
+Film count location varies by printer model:
+
+**Square Link (FI017) & Wide Link (FI022):**
+- Film count stored in **capability byte lower nibble** (bits 0-3)
+- Payload[5] contains 0x0C (12) - purpose unknown, NOT film count
+- Verified with real printers
+
+**Older Mini Link 1/2 (FI031/FI032):**
+- Film count stored in **payload[5]** (full byte)
+- Capability byte lower nibble unused for film count
+- Not verified with real printer
+
+**Detection Method:**
 ```swift
-let functionByte = payload[0]
-let photosRemaining = Int(functionByte & 0x0F)  // Bits 0-3: photos left (0-10)
-let isCharging = (functionByte & 0x80) != 0     // Bit 7: charging status
+let capabilityByte = payload[0]
+
+// Detect model by capability byte range:
+// - Square Link: 0x20-0x2F (capability byte lower nibble = film count) ✅ VERIFIED
+// - Wide Link: 0x30-0x3F (capability byte lower nibble = film count) ✅ VERIFIED
+// - Older Mini: 0x10-0x1F (payload[5] = film count, unverified)
+let isSquareOrWideLink = (capabilityByte >= 0x20 && capabilityByte < 0x40)
+
+let photosRemaining: Int
+if isSquareOrWideLink {
+    // Square/Wide: Extract lower 4 bits (nibble) of capability byte
+    photosRemaining = Int(capabilityByte & 0x0F)
+} else {
+    // Older Mini: Full byte at payload[5]
+    photosRemaining = Int(payload[5])
+}
+
+let isCharging = (capabilityByte & 0x80) != 0  // Bit 7: charging status
+```
+
+**Example Response - Square Link with 6 films:**
+```
+Payload: 00 02 26 00 00 0C 00 00 00 00
+              ^^          ^^
+Capability: 0x26 = 0010 0110
+  Upper bits: 0x20 (Square Link model identifier)
+  Lower nibble: 0x06 = 6 photos remaining ✅
+Payload[5]: 0x0C = 12 (NOT film count - purpose unknown)
+```
+
+**Example Response - Wide Link with 4 films:**
+```
+Payload: 00 02 34 00 00 0C 00 00 00 00
+              ^^          ^^
+Capability: 0x34 = 0011 0100
+  Upper bits: 0x30 (Wide Link model identifier)
+  Lower nibble: 0x04 = 4 photos remaining ✅
+Payload[5]: 0x0C = 12 (NOT film count - purpose unknown)
+```
+
+**Capability Byte Format:**
+```
+Bit 7: Charging status (1 = charging, 0 = not charging)
+Bits 4-6: Model identifier
+  - 001 (0x10): Older Mini Link 1/2
+  - 010 (0x20): Square Link
+  - 011 (0x30): Wide Link / Mini Link 3
+Bits 0-3: Film count for Square/Wide/Mini3 (0-10)
+          Unused for older Mini (uses payload[5])
 ```
 
 ---
@@ -612,15 +674,19 @@ Wide Link has **model-specific protocol responses** that differ from Mini and Sq
    - Mini printer response: `61 42 00 0D 00 02 00 01 [03] 50 00 10 E9`
 
 4. **Printer Function Response (Function 0x00, Operation 0x02, Type 0x02):**
-   - Capability byte (byte 8) is **CONSTANT `0x15`** for Wide Link
-   - Unlike Mini/Square, Wide does **NOT encode photo count** in capability byte
-   - Photo count is stored separately in byte 11
-   - Real Wide printer response: `61 42 00 11 00 02 00 02 [15] 00 00 0D 00 00 00 00 25`
-     - Capability: `0x15` (constant regardless of photo count)
-     - Photos: byte 11 = `0x0D` (13 photos)
+   - **⚠️ UPDATED December 2025:** Wide Link uses **SAME encoding as Square Link**
+   - Capability byte (byte 8 in full packet / payload[2]) encodes film count in lower nibble
+   - Real Wide printer response (4 films): `61 42 00 11 00 02 00 02 [34] 00 00 0C 00 00 00 00 XX`
+     - Capability: `0x34` = `0x30` (Wide base) + `0x04` (4 films) ✅ VERIFIED
+     - Payload[5] (byte 11): `0x0C` (12) - NOT film count, purpose unknown
+   - Real Wide printer response (13 films): `61 42 00 11 00 02 00 02 [3D] 00 00 0C 00 00 00 00 XX`
+     - Capability: `0x3D` = `0x30` (Wide base) + `0x0D` (13 films) ✅ EXPECTED
    - Compare to Mini: `61 42 00 11 00 02 00 02 [38] 00 00 08 00 00 00 00 13`
      - Capability: `0x38` = `0x30` base + `0x08` photos (encoded)
      - Photos: byte 11 = `0x08` (redundant)
+   - Compare to Square (6 films): `61 42 00 11 00 02 00 02 [26] 00 00 0C 00 00 00 00 XX`
+     - Capability: `0x26` = `0x20` (Square base) + `0x06` (6 films) ✅ VERIFIED
+     - Payload[5]: `0x0C` (12) - NOT film count (same mystery value as Wide)
 
 5. **Additional Info Type 0x01 Response (Function 0x30, Operation 0x10, Type 0x01):**
    - Wide Link: Specific bytes at positions 11-15: `1E 00 01 01 00`
@@ -1664,7 +1730,7 @@ The ESP32 Instax Bridge simulator has achieved **complete compatibility** with a
 #### ⚠️ Wide Link App - PROTOCOL VERIFIED, TESTING FFE1 FIX (December 2025)
 - ✅ All protocol responses verified byte-for-byte against real Wide printer
 - ✅ Battery info byte 8 = `0x01` (Wide-specific, vs `0x03` for Mini)
-- ✅ Capability byte = constant `0x15` (Wide doesn't encode photos like Mini/Square)
+- ✅ **Film count encoding same as Square:** Capability byte lower nibble (VERIFIED Dec 2025)
 - ✅ Dimensions response = 19 bytes for Wide (vs 23 bytes for Mini/Square)
 - ✅ Ping response byte 9 = `0x01` for Wide (vs `0x02` for Mini/Square)
 - ✅ Additional Info type 0x01 = Wide-specific bytes at positions 11-15
@@ -1690,26 +1756,39 @@ After extensive debugging with official INSTAX apps, the following requirements 
 
 ### 1. BLE Address Whitelist (MOST CRITICAL)
 
-**Discovery:** Mini and Wide apps implement strict BLE address filtering. Square app is more permissive.
+**Discovery:** Each printer model uses a **DIFFERENT** MAC pattern for app filtering.
 
-**Required Pattern:** `fa:ab:bc:8X:XX:XX`
+**⚠️ CRITICAL: Wide Uses Different Pattern Than Mini/Square!**
+
+**Model-Specific MAC Patterns:**
+
+| Model | 4th Byte | Example MAC | Real Hardware |
+|-------|----------|-------------|---------------|
+| Mini Link 3 | `0x86` | `fa:ab:bc:86:55:00` | `fa:ab:bc:86:18:4e` ✅ Verified |
+| Square Link | `0x87` | `fa:ab:bc:87:55:00` | Tested working ✅ |
+| Wide Link | `0x55` | `fa:ab:bc:55:55:01` | `fa:ab:bc:55:dd:c2` ✅ Verified (FI022) |
+
+**Required Pattern Components:**
 - First 3 bytes: **MUST** be `fa:ab:bc` (INSTAX manufacturer prefix)
-- 4th byte: **MUST** be `0x8X` (e.g., 0x80-0x8F range)
-- Last 2 bytes: Can be anything
+- 4th byte: **Model-specific** (see table above)
+- Last 2 bytes: Can be anything (use unique values to avoid iOS cache conflicts)
 
-**Examples:**
-- ✅ `fa:ab:bc:87:55:00` - Works with all apps
-- ✅ `fa:ab:bc:86:18:4e` - Real Mini Link 3
-- ✅ `fa:ab:bc:80:00:00` - Would work
-- ❌ `fa:ab:bc:55:55:00` - Only Square app can see this
-- ❌ `fa:ab:bc:75:00:00` - Only Square app can see this
+**Common Mistakes:**
+- ❌ `fa:ab:bc:87:55:00` for Wide - Uses Mini/Square pattern, Wide app won't discover
+- ❌ `fa:ab:bc:8X:XX:XX` for Wide - Wrong! Wide requires 0x55, not 0x8X range
+- ❌ `fa:ab:bc:75:00:00` - Invalid pattern for any model
 
-**Testing Results:**
-- Address `fa:ab:bc:55:55:00` → Only Square app detected it
-- Address `fa:ab:bc:87:55:00` → All three apps detected it
+**Testing Results (December 2025):**
+- Mini with `fa:ab:bc:86:55:00` → Mini app discovers ✅
+- Square with `fa:ab:bc:87:55:00` → Square app discovers ✅
+- Wide with `fa:ab:bc:55:55:01` → Wide app discovers ✅
+- Wide with `fa:ab:bc:87:55:00` → Wide app FAILS ❌ (wrong pattern)
 
 **Why This Matters:**
-Without the correct address range, Mini/Wide apps will **never discover** the printer, even if all other parameters are perfect.
+Each official app filters on specific MAC patterns. Using the wrong 4th byte means
+the app will **never discover** your device, even if all other parameters are perfect.
+Wide specifically requires 0x55 - this was confirmed via Wireshark capture of real
+FI022 hardware.
 
 ### 2. Serial Number Patterns (Model Detection)
 
@@ -1907,10 +1986,10 @@ Manufacturer: "FUJIFILM"
 
 ```c
 // BLE Configuration
-BLE Address: fa:ab:bc:87:55:00 (Random, Static)
+BLE Address: fa:ab:bc:55:55:01 (Random, Static) - CRITICAL: 0x55, NOT 0x87!
 Advertising Flags: 0x05 (Limited Discoverable)
 TX Power: 0 dBm
-Device Name: "INSTAX-20555555(IOS)"
+Device Name: "INSTAX-205555"
 Manufacturer Data: D8 04 02 00
 
 // Device Information Service
@@ -3048,6 +3127,37 @@ Time to execute: ~3-10 seconds depending on image size and BLE speed
 ---
 
 ## Changelog
+
+### December 2025 (Wide Link MAC Address Discovery)
+- **CRITICAL DISCOVERY: Wide Link uses DIFFERENT MAC pattern than Mini/Square**
+  - Real Wide FI022 hardware uses `fa:ab:bc:55:dd:c2` (captured via Wireshark)
+  - 4th byte is **0x55**, NOT 0x8X range like Mini/Square
+  - Previous documentation incorrectly stated 0x8X was required for Wide app filtering
+  - Wide app specifically filters for 0x55 pattern - using 0x87 causes discovery failure
+- **Updated model-specific MAC patterns:**
+  - Mini Link 3: `fa:ab:bc:86:55:00` (0x86 matches real hardware) ✅ VERIFIED
+  - Square Link: `fa:ab:bc:87:55:00` (0x87 tested working) ✅ VERIFIED
+  - Wide Link: `fa:ab:bc:55:55:01` (0x55 from real FI022) ✅ VERIFIED
+- **Device name updated:** "WIDE-205555" → "INSTAX-205555" (matches real printer format)
+- **Added detailed MAC pattern table** with common mistakes section
+- **iOS cache handling:** Use unique MAC suffix for each model to prevent cache conflicts
+
+### December 2025 (Square Link Film Count Discovery)
+- **CRITICAL DISCOVERY: Square Link uses capability byte nibble encoding** (same as Wide Link)
+  - Previous documentation incorrectly stated Square uses payload[5] for film count
+  - Verified with real FI017 printer: capability byte 0x26 = 0x20 (Square) | 0x06 (6 films)
+  - Payload[5] contains 0x0C (12) on both Square and Wide - purpose unknown, NOT film count
+  - Updated all code examples and parsing logic to reflect correct behavior
+- **Updated model detection ranges:**
+  - Square Link (0x20-0x2F): Film count in capability byte lower nibble ✅ VERIFIED
+  - Wide Link (0x30-0x3F): Film count in capability byte lower nibble ✅ VERIFIED
+  - Older Mini (0x10-0x1F): Film count in payload[5] (unverified)
+- **Updated Mini Link 3 FFF1 characteristic parsing:**
+  - Fixed off-by-one error: byte 0 contains photos USED, not remaining
+  - Calculation: 10 - photos_used = photos_remaining
+  - Added logic to prevent standard query from overwriting FFF1 data for Link 3
+- **Added comprehensive film count parsing section** with model-specific examples
+- **Documented 0x0C mystery value** appearing at payload[5] for Square and Wide printers
 
 ### December 2025 (Wide Link FFE1 Fix)
 - **CRITICAL: Fixed Wide FFE1 characteristic properties** - FFE1 must be Write/WriteNoResponse/Notify (NOT Read/Notify)
