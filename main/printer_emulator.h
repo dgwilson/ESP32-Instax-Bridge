@@ -149,4 +149,11 @@ bool printer_emulator_is_advertising(void);
  */
 void printer_emulator_dump_config(void);
 
+/**
+ * Abort current print job and cleanup resources
+ * Called on: disconnect, error, timeout
+ * Frees print buffer and closes file without updating counters
+ */
+void printer_emulator_abort_print(void);
+
 #endif // PRINTER_EMULATOR_H

@@ -57,6 +57,11 @@ static uint16_t s_notify_handle = 0;
 static uint32_t s_print_image_size = 0;
 static uint32_t s_print_bytes_received = 0;
 static uint32_t s_print_chunk_index = 0;
+static bool s_print_in_progress = false;  // True between START and END commands
+
+// Cached Link 3 responses for instant replies during print upload
+static uint8_t s_cached_fff1_data[12] = {0};
+static bool s_fff1_cached = false;
 
 // Packet reassembly buffer for handling fragmented BLE writes
 #define PACKET_BUFFER_SIZE 4096
@@ -366,6 +371,17 @@ static esp_err_t send_notification(const uint8_t *data, size_t len) {
         return ESP_ERR_INVALID_STATE;
     }
 
+    // CRITICAL: Block ALL notifications during active print upload except DATA packet ACKs
+    // This prevents BLE bandwidth saturation from status queries
+    bool is_data_ack = (len >= 6 && data[4] == 0x10 && data[5] == 0x01);
+    bool is_print_cmd = (len >= 6 && data[4] == 0x10); // Any print-related command
+
+    if (s_print_in_progress && !is_print_cmd) {
+        // Silently drop non-print notifications during upload
+        // This blocks status query responses that saturate BLE bandwidth
+        return ESP_OK;
+    }
+
     struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
     if (om == NULL) {
         ESP_LOGE(TAG, "Failed to allocate mbuf for notification");
@@ -379,8 +395,6 @@ static esp_err_t send_notification(const uint8_t *data, size_t len) {
     }
 
     // Skip verbose logging for data packet ACKs (func=0x10, op=0x01)
-    bool is_data_ack = (len >= 6 && data[4] == 0x10 && data[5] == 0x01);
-
     if (!is_data_ack) {
         ESP_LOGI(TAG, "📤 Sent response (%d bytes)", len);
         // Log first 16 bytes of response for debugging
@@ -669,6 +683,14 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                     send_notification(response, response_len);
                 }
             } else if (operation == INSTAX_OP_SUPPORT_FUNCTION_INFO) {
+                // CRITICAL: Suppress ALL status queries during active print upload
+                // to prevent BLE bandwidth saturation that causes packet loss
+                if (s_print_in_progress) {
+                    // Silently ignore - don't send any response
+                    // This prevents the ~50+ notifications that saturate BLE bandwidth
+                    return;
+                }
+
                 // Return supported functions info
                 ESP_LOGI(TAG, "Info request: operation=0x%02x, payload_len=%d", operation, payload_len);
 
@@ -1136,6 +1158,19 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
 
                         if (print_start_ok) {
                             ESP_LOGI(TAG, "✅ Print start ACK sent (timestamp: %lu ms)", (unsigned long)esp_log_timestamp());
+                            s_print_in_progress = true;  // Mark print as active (data upload phase)
+
+                            // Pre-build cached Link 3 FFF1 response for instant replies during upload
+                            // This minimizes GATT request processing time to prevent data packet loss
+                            const instax_printer_info_t *info = printer_emulator_get_info();
+                            s_cached_fff1_data[0] = (uint8_t)(10 - info->photos_remaining);
+                            s_cached_fff1_data[1] = 0x01;
+                            s_cached_fff1_data[3] = 0x15;
+                            s_cached_fff1_data[6] = 0x4F;
+                            s_cached_fff1_data[8] = (uint8_t)((info->battery_percentage * 200) / 100);
+                            s_cached_fff1_data[9] = info->is_charging ? 0x00 : 0xFF;
+                            s_cached_fff1_data[10] = 0x0F;
+                            s_fff1_cached = true;
                         }
                     }
                     break;
@@ -1183,6 +1218,9 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                     ESP_LOGI(TAG, "Print end: received %lu/%lu bytes",
                             (unsigned long)s_print_bytes_received,
                             (unsigned long)s_print_image_size);
+
+                    s_print_in_progress = false;  // Data upload complete, resume normal status queries
+                    s_fff1_cached = false;  // Clear cached Link 3 response
 
                     // Send ACK with proper packet structure
                     response[0] = INSTAX_HEADER_FROM_DEVICE_0;
@@ -1618,6 +1656,14 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
             s_connected = false;
             s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 
+            // CRITICAL: Cleanup any active print job to prevent memory leak
+            printer_emulator_abort_print();
+            s_print_in_progress = false;  // Reset print state
+            s_fff1_cached = false;  // Clear cached Link 3 response
+            s_print_image_size = 0;
+            s_print_bytes_received = 0;
+            s_print_chunk_index = 0;
+
             // Clear advertising flag and resume advertising
             s_advertising = false;  // CRITICAL: Clear flag before restarting
             ble_peripheral_start_advertising(NULL);
@@ -2033,6 +2079,13 @@ static int link3_info_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             // Byte 0: Photos USED (0-10) - NOT remaining!
             // Byte 8: Battery level (raw, 0-200 scale)
             // Byte 9: Charging status (0xFF = NOT charging)
+
+            // CRITICAL: During print upload, return cached data instantly to minimize processing time
+            // This prevents BLE receive buffer overflow from delayed data packet reception
+            if (s_print_in_progress && s_fff1_cached) {
+                return os_mbuf_append(ctxt->om, s_cached_fff1_data, sizeof(s_cached_fff1_data));
+            }
+
             uint8_t fff1_data[12] = {0};
             fff1_data[0] = (uint8_t)(10 - printer_info->photos_remaining);  // Photos USED (not remaining!)
             fff1_data[1] = 0x01;
@@ -2041,9 +2094,13 @@ static int link3_info_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             fff1_data[8] = (uint8_t)((printer_info->battery_percentage * 200) / 100);  // Battery (0-200 scale)
             fff1_data[9] = printer_info->is_charging ? 0x00 : 0xFF;  // 0xFF = NOT charging
             fff1_data[10] = 0x0F;
-            uint8_t photos_used = fff1_data[0];
-            ESP_LOGI(TAG, "Link3 Info: FFF1 read - %d used, %d remaining, %d%% battery",
-                     photos_used, printer_info->photos_remaining, printer_info->battery_percentage);
+
+            // Suppress verbose logging during active print upload to prevent BLE bandwidth saturation
+            if (!s_print_in_progress) {
+                uint8_t photos_used = fff1_data[0];
+                ESP_LOGI(TAG, "Link3 Info: FFF1 read - %d used, %d remaining, %d%% battery",
+                         photos_used, printer_info->photos_remaining, printer_info->battery_percentage);
+            }
             return os_mbuf_append(ctxt->om, fff1_data, sizeof(fff1_data));
         }
         else if (ble_uuid_cmp(uuid, &link3_ffd1_uuid.u) == 0) {

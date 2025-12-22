@@ -358,11 +358,10 @@ static void on_print_data(uint32_t chunk_index, const uint8_t *data, size_t len)
 }
 
 /**
- * Print complete callback - called when print job finishes
+ * Cleanup print buffers and close file
+ * Called on: successful completion, disconnect, error, timeout
  */
-static void on_print_complete(void) {
-    ESP_LOGI(TAG, "Print job complete!");
-
+static void cleanup_print_job(bool save_counts) {
     // Flush any remaining buffered data to SPIFFS
     if (s_print_buffer != NULL && s_print_buffer_pos > 0 && s_current_print_file != NULL) {
         ESP_LOGI(TAG, "Flushing final %d bytes from RAM buffer to SPIFFS", s_print_buffer_pos);
@@ -373,17 +372,21 @@ static void on_print_complete(void) {
         s_print_buffer_pos = 0;
     }
 
-    // Free RAM buffer
+    // Free RAM buffer (CRITICAL for preventing memory leak)
     if (s_print_buffer != NULL) {
         free(s_print_buffer);
         s_print_buffer = NULL;
-        ESP_LOGD(TAG, "Freed RAM buffer");
+        ESP_LOGI(TAG, "✅ Freed 32KB RAM buffer");
     }
 
+    // Close file
     if (s_current_print_file != NULL) {
         fclose(s_current_print_file);
         s_current_print_file = NULL;
+    }
 
+    // Update counters only if requested (successful completion)
+    if (save_counts && s_current_print_filename[0] != '\0') {
         ESP_LOGI(TAG, "Saved print file: %s", s_current_print_filename);
 
         // Increment lifetime counter
@@ -404,6 +407,17 @@ static void on_print_complete(void) {
                 (unsigned long)s_printer_info.lifetime_print_count,
                 s_printer_info.photos_remaining);
     }
+
+    // Clear filename
+    s_current_print_filename[0] = '\0';
+}
+
+/**
+ * Print complete callback - called when print job finishes successfully
+ */
+static void on_print_complete(void) {
+    ESP_LOGI(TAG, "Print job complete!");
+    cleanup_print_job(true);  // Save counts on successful completion
 }
 
 esp_err_t printer_emulator_init(void) {
@@ -800,4 +814,9 @@ void printer_emulator_dump_config(void) {
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "");
+}
+
+void printer_emulator_abort_print(void) {
+    ESP_LOGW(TAG, "⚠️ Aborting print job (disconnect/error/timeout)");
+    cleanup_print_job(false);  // Don't save counts on abort
 }
