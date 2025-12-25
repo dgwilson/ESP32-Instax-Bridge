@@ -362,8 +362,18 @@ static const struct ble_gatt_svc_def gatt_svr_svcs_wide[] = {
     {0}
 };
 
+// Retry configuration for ACK sending
+#define ACK_RETRY_COUNT 5
+#define ACK_RETRY_DELAY_MS 10
+
+// ACK statistics for diagnostics
+static uint32_t s_ack_sent_count = 0;
+static uint32_t s_ack_retry_count = 0;
+static uint32_t s_ack_fail_count = 0;
+
 /**
- * Send a notification to the connected client
+ * Send a notification to the connected client with retry logic
+ * Returns ESP_OK if notification sent successfully, error code otherwise
  */
 static esp_err_t send_notification(const uint8_t *data, size_t len) {
     if (!s_connected || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
@@ -382,33 +392,62 @@ static esp_err_t send_notification(const uint8_t *data, size_t len) {
         return ESP_OK;
     }
 
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
-    if (om == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate mbuf for notification");
-        return ESP_ERR_NO_MEM;
+    // Retry loop for reliable ACK delivery
+    int retry;
+    for (retry = 0; retry < ACK_RETRY_COUNT; retry++) {
+        // Wait for mbuf to become available if this is a retry
+        if (retry > 0) {
+            s_ack_retry_count++;
+            ESP_LOGW(TAG, "⚠️ ACK retry %d/%d (waiting %dms for buffers)",
+                     retry, ACK_RETRY_COUNT, ACK_RETRY_DELAY_MS);
+            vTaskDelay(pdMS_TO_TICKS(ACK_RETRY_DELAY_MS));
+        }
+
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
+        if (om == NULL) {
+            ESP_LOGW(TAG, "⚠️ mbuf allocation failed (retry %d/%d)", retry + 1, ACK_RETRY_COUNT);
+            continue;  // Retry after delay
+        }
+
+        int rc = ble_gatts_notify_custom(s_conn_handle, s_notify_handle, om);
+        if (rc == 0) {
+            // Success!
+            s_ack_sent_count++;
+
+            // Log DATA packet ACKs with count for diagnostics
+            if (is_data_ack) {
+                // Periodic logging every 10 ACKs to track progress without flooding
+                if (s_ack_sent_count % 10 == 0 || retry > 0) {
+                    ESP_LOGI(TAG, "✅ DATA ACK #%lu sent%s",
+                             (unsigned long)s_ack_sent_count,
+                             retry > 0 ? " (after retry)" : "");
+                }
+            } else {
+                ESP_LOGI(TAG, "📤 Sent response (%d bytes)", len);
+                // Log first 16 bytes of response for debugging
+                ESP_LOGI(TAG, "   First bytes: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                        len > 0 ? data[0] : 0, len > 1 ? data[1] : 0,
+                        len > 2 ? data[2] : 0, len > 3 ? data[3] : 0,
+                        len > 4 ? data[4] : 0, len > 5 ? data[5] : 0,
+                        len > 6 ? data[6] : 0, len > 7 ? data[7] : 0,
+                        len > 8 ? data[8] : 0, len > 9 ? data[9] : 0,
+                        len > 10 ? data[10] : 0, len > 11 ? data[11] : 0,
+                        len > 12 ? data[12] : 0, len > 13 ? data[13] : 0,
+                        len > 14 ? data[14] : 0, len > 15 ? data[15] : 0);
+            }
+            return ESP_OK;
+        }
+
+        // BLE stack error - log and retry
+        ESP_LOGW(TAG, "⚠️ ble_gatts_notify_custom failed: %d (retry %d/%d)", rc, retry + 1, ACK_RETRY_COUNT);
+        // Note: om is freed by NimBLE on failure, don't free it
     }
 
-    int rc = ble_gatts_notify_custom(s_conn_handle, s_notify_handle, om);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "Failed to send notification: %d", rc);
-        return ESP_FAIL;
-    }
-
-    // Skip verbose logging for data packet ACKs (func=0x10, op=0x01)
-    if (!is_data_ack) {
-        ESP_LOGI(TAG, "📤 Sent response (%d bytes)", len);
-        // Log first 16 bytes of response for debugging
-        ESP_LOGI(TAG, "   First bytes: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-                len > 0 ? data[0] : 0, len > 1 ? data[1] : 0,
-                len > 2 ? data[2] : 0, len > 3 ? data[3] : 0,
-                len > 4 ? data[4] : 0, len > 5 ? data[5] : 0,
-                len > 6 ? data[6] : 0, len > 7 ? data[7] : 0,
-                len > 8 ? data[8] : 0, len > 9 ? data[9] : 0,
-                len > 10 ? data[10] : 0, len > 11 ? data[11] : 0,
-                len > 12 ? data[12] : 0, len > 13 ? data[13] : 0,
-                len > 14 ? data[14] : 0, len > 15 ? data[15] : 0);
-    }
-    return ESP_OK;
+    // All retries exhausted - this is critical!
+    s_ack_fail_count++;
+    ESP_LOGE(TAG, "❌ CRITICAL: ACK LOST after %d retries! Total failures: %lu",
+             ACK_RETRY_COUNT, (unsigned long)s_ack_fail_count);
+    return ESP_FAIL;
 }
 
 /**
@@ -1160,6 +1199,12 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                             ESP_LOGI(TAG, "✅ Print start ACK sent (timestamp: %lu ms)", (unsigned long)esp_log_timestamp());
                             s_print_in_progress = true;  // Mark print as active (data upload phase)
 
+                            // Reset ACK statistics for this print job
+                            s_ack_sent_count = 0;
+                            s_ack_retry_count = 0;
+                            s_ack_fail_count = 0;
+                            ESP_LOGI(TAG, "📊 ACK counters reset for new print job");
+
                             // Pre-build cached Link 3 FFF1 response for instant replies during upload
                             // This minimizes GATT request processing time to prevent data packet loss
                             const instax_printer_info_t *info = printer_emulator_get_info();
@@ -1206,11 +1251,13 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                     response[6] = 0x00; // Status: OK
                     response[7] = instax_calculate_checksum(response, 7);
 
-                    // Delay before ACK to slow down sender and prevent buffer overflow
-                    // This gives ESP32 time to process data (RAM buffer + SPIFFS writes)
-                    vTaskDelay(pdMS_TO_TICKS(DATA_PACKET_ACK_DELAY_MS));
-
+                    // Send ACK immediately - don't delay before sending!
+                    // This ensures ACK goes out right away before any buffer issues
                     send_notification(response, response_len);
+
+                    // Delay AFTER ACK to throttle next packet processing
+                    // This gives ESP32 time to process data and prevents buffer overflow
+                    vTaskDelay(pdMS_TO_TICKS(DATA_PACKET_ACK_DELAY_MS));
                     break;
                 }
 
@@ -1218,6 +1265,26 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                     ESP_LOGI(TAG, "Print end: received %lu/%lu bytes",
                             (unsigned long)s_print_bytes_received,
                             (unsigned long)s_print_image_size);
+
+                    // Log ACK statistics for this print job
+                    ESP_LOGI(TAG, "");
+                    ESP_LOGI(TAG, "╔════════════════════════════════════════════════════════════════╗");
+                    ESP_LOGI(TAG, "║            📊 ACK STATISTICS                                   ║");
+                    ESP_LOGI(TAG, "╠════════════════════════════════════════════════════════════════╣");
+                    ESP_LOGI(TAG, "║  ACKs Sent:     %6lu                                         ║", (unsigned long)s_ack_sent_count);
+                    ESP_LOGI(TAG, "║  Retries:       %6lu                                         ║", (unsigned long)s_ack_retry_count);
+                    ESP_LOGI(TAG, "║  Failures:      %6lu                                         ║", (unsigned long)s_ack_fail_count);
+                    ESP_LOGI(TAG, "╚════════════════════════════════════════════════════════════════╝");
+                    if (s_ack_fail_count > 0) {
+                        ESP_LOGE(TAG, "⚠️ WARNING: %lu ACKs were lost! Client may report packet loss.",
+                                 (unsigned long)s_ack_fail_count);
+                    } else if (s_ack_retry_count > 0) {
+                        ESP_LOGW(TAG, "ℹ️ %lu retries were needed, but all ACKs delivered successfully.",
+                                 (unsigned long)s_ack_retry_count);
+                    } else {
+                        ESP_LOGI(TAG, "✅ All ACKs delivered successfully with no retries needed.");
+                    }
+                    ESP_LOGI(TAG, "");
 
                     s_print_in_progress = false;  // Data upload complete, resume normal status queries
                     s_fff1_cached = false;  // Clear cached Link 3 response
