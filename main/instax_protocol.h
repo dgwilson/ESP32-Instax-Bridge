@@ -116,7 +116,7 @@ typedef struct {
     bool cover_open;    // For error 179: Cover open
     bool printer_busy;  // For error 181: Printer busy
 
-    // New discovered protocol features (December 2024)
+    // New discovered protocol features (December 2025)
     uint8_t auto_sleep_timeout;  // Auto-sleep timeout in minutes (0 = never, 1-255 = minutes)
     uint8_t print_mode;          // Print mode: 0x00 = Rich, 0x03 = Natural
 

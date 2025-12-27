@@ -164,7 +164,7 @@ All characteristics use the custom base UUID: `0000XXXX-3C17-D293-8E48-14FE2E4DA
 | Characteristic UUID | Properties | Data Size | Description |
 |---------------------|------------|-----------|-------------|
 | `0000FFE1-3C17...` | **Write/WriteNoResponse/Notify** | 12 bytes | **Battery & Film Count** (Status Request)<br>App writes to request status, printer responds via notification<br>Byte 0: Photos remaining (0-10)<br>Byte 1: Ready status (0x01 = ready, 0x00 = busy)<br>Bytes 2-7: Status bytes (0x00, 0x15, 0x00, 0x00, 0x4F, 0x00)<br>Byte 8: Battery level (0-200 scale, 0-100%)<br>Byte 9: Charging status (0xFF = not charging, 0x00 = charging)<br>Bytes 10-11: Status bytes (0x0F, 0x00) |
-| `0000FFE9-3C17...` | Write | Variable | Control/command characteristic (accepts writes from app) |
+| `0000FFE9-3C17...` | Write | Variable | **Control/Command** (Printer Ready Check)<br>App writes to check printer readiness before printing<br>When written, printer should send FFEA notification to confirm ready status<br>Without this response, official app shows "Printer Busy (1)" error |
 | `0000FFEA-3C17...` | Notify | 11 bytes | **Printer Ready Status** (CRITICAL)<br>Must send notification when client subscribes<br>Data pattern: `02 09 B9 00 11 01 00 80 84 1E 00`<br>Without this notification, official app shows "Printer Busy (1)" error |
 
 **⚠️ CRITICAL: FFE1 is NOT a Read characteristic!**
@@ -1713,7 +1713,7 @@ The ESP32 Instax Bridge simulator requires significantly longer packet delays du
 
 ## Official Instax App Compatibility
 
-**Status:** ✅ **FULL COMPATIBILITY ACHIEVED** (December 2024) - All three printer models working!
+**Status:** ✅ **FULL COMPATIBILITY ACHIEVED** (December 2025) - All three printer models working!
 
 **Note:** This section documents ESP32 Instax Bridge simulator compatibility with official Instax apps, not core protocol behavior.
 
@@ -2102,7 +2102,7 @@ For complete investigation details, see the ESP32 Instax Bridge project document
 
 This investigation revealed critical requirements for official app compatibility:
 
-**Mini Link 3 Breakthrough (December 2024):**
+**Mini Link 3 Breakthrough (December 2025):**
 - Link 3-specific services (Info and Status) are **MANDATORY** for Mini app discovery
 - Without these services, the app will not show the device in the list at all
 - All Link 3 Info Service characteristics must return exact values matching real device

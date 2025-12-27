@@ -173,12 +173,12 @@ idf.py build flash monitor
 
 ```c
 #define INSTAX_FUNC_INFO            0x00  // Info queries
-#define INSTAX_FUNC_DEVICE_CONTROL  0x01  // Device control (newly discovered Dec 2024)
+#define INSTAX_FUNC_DEVICE_CONTROL  0x01  // Device control (newly discovered Dec 2025)
 #define INSTAX_FUNC_PRINT           0x10  // Print operations
 #define INSTAX_FUNC_LED             0x30  // LED/Sensor/Color operations
 ```
 
-### Critical Operations (Newly Discovered - December 2024)
+### Critical Operations (Newly Discovered - December 2025)
 
 #### **Auto-Sleep Settings** (Function 0x01, Operation 0x02) ✅
 ```c
@@ -318,7 +318,7 @@ typedef struct {
     bool cover_open;                   // Error 179
     bool printer_busy;                 // Error 181
 
-    // Newly discovered features (Dec 2024)
+    // Newly discovered features (Dec 2025)
     uint8_t auto_sleep_timeout;        // 0=never, 1-255=minutes
     uint8_t print_mode;                // 0x00=Rich, 0x03=Natural
 } instax_printer_info_t;
@@ -363,7 +363,7 @@ GET /api/printer-info        // Current printer state
 - **Offline detection**: Banner appears if ESP32 becomes unreachable
 - **Newly Discovered Features Display**: Shows auto-sleep timeout and print mode
   - Updates live when app sends commands
-  - Green-themed section: "✨ Newly Discovered Features (Dec 2024)"
+  - Green-themed section: "✨ Newly Discovered Features (Dec 2025)"
 - **Error simulation controls**: Checkboxes for cover open, printer busy
 - **Accelerometer sliders**: X/Y/Z axis control with live value display
 - **File viewer**: View and download received prints
@@ -616,7 +616,7 @@ if (custom_error_condition) {
   - How ESP32 simulator integrates with Moments Print
 
 - **Protocol Discovery Documents**: `/Users/dgwilson/Desktop/Projects/Moments Project Suite/`
-  - `Protocol_Discovery_Summary.md` - Executive summary of Dec 2024 findings
+  - `Protocol_Discovery_Summary.md` - Executive summary of Dec 2025 findings
   - `Protocol_Discovery_Capture2.md` - Detailed packet analysis
   - `Moments_Print_Battery_Film_Fix.md` - Battery/film parsing corrections
 
@@ -699,11 +699,11 @@ This is appropriate for development/testing but consider security hardening for 
 
 ---
 
-## Official INSTAX App Compatibility (December 2024)
+## Official INSTAX App Compatibility (December 2025)
 
 ### Current Status: PROTOCOL VERIFIED ✅ (App Compatibility Partial ⚠️)
 
-**December 5, 2024 BREAKTHROUGH:** Missing Device Information Service characteristics were the blocker! Official app now accepts simulator and initiates print jobs.
+**December 5, 2025 BREAKTHROUGH:** Missing Device Information Service characteristics were the blocker! Official app now accepts simulator and initiates print jobs.
 
 ### Root Cause Discovery: Missing Device Information Service
 
@@ -887,7 +887,7 @@ See complete experimental details in:
 
 ### Official App Crash Analysis (Detailed)
 
-**Enhanced logging revealed the exact crash mechanism** (December 6, 2024):
+**Enhanced logging revealed the exact crash mechanism** (December 6, 2025):
 
 **Timeline:**
 ```
@@ -930,7 +930,7 @@ The ESP32 INSTAX printer simulator has **100% correct and complete protocol impl
 
 The simulator successfully emulates a physical INSTAX printer. The official app crash is an internal iOS application issue unrelated to the Bluetooth protocol implementation.
 
-### Current Testing Status (December 6, 2024)
+### Current Testing Status (December 6, 2025)
 
 **INSTAX Square:** ✅ Protocol validated and complete
 **INSTAX Mini:** Ready for testing
@@ -943,7 +943,7 @@ The simulator successfully emulates a physical INSTAX printer. The official app 
 
 ---
 
-## Film Count Dual-Encoding Fix (December 13, 2024)
+## Film Count Dual-Encoding Fix (December 13, 2025)
 
 ### Problem Discovered
 
@@ -1052,3 +1052,131 @@ Sending printer function: 8 photos, charging=0
 | javl/InstaxBLE (Python)| `payload[2] & 0x0F`    | ✅ Compatible |
 
 This dual-encoding approach maintains backward compatibility with all INSTAX apps while accurately emulating real printer behavior.
+
+---
+
+## Wide Link "Printer Busy (1)" Error Investigation (December 2025 - RESOLVED ✅)
+
+### Problem Description
+
+Official INSTAX Wide app shows "The device is busy. Please try again (1)" error when attempting to print, despite:
+- ✅ Connection succeeding
+- ✅ Battery info displaying correctly
+- ✅ Film count displaying correctly
+- ✅ Moments Print working perfectly with the same simulator
+- ✅ All handshake queries completing successfully
+
+### Current Status: RESOLVED ✅ (New Issue: App Crash During Print)
+
+**Last Updated:** December 27, 2025
+
+**BREAKTHROUGH:** Real iPhone packet capture of Wide printer print revealed the root cause!
+
+The "Printer Busy (1)" error is now **FIXED**. The official INSTAX Wide app now proceeds to print. However, like the Mini and Square apps, it crashes during the print sequence (before image data transfer begins).
+
+### Root Cause Discovery (December 27, 2025)
+
+**Real iPhone packet capture of a successful Wide printer print** revealed critical differences:
+
+#### Critical Fix #1: Model Code "BO-22" (not "FI022")
+
+The real Wide Link printer reports model code **"BO-22"**, not "FI022" as previously documented:
+
+```
+Real Wide:  61 42 00 0f 00 01 00 01 05 42 4f 2d 32 32 24 = "BO-22"
+Old ESP32:  61 42 00 0F 00 01 00 01 05 46 49 30 32 32 23 = "FI022"
+```
+
+**Note:** The Wide Link is an older model (micro USB charging vs USB-C on newer models). The "BO" prefix may be an earlier naming convention before Fujifilm standardized on "FI0xx".
+
+**Fix:** Changed `printer_emulator.c` Wide model code from "FI022" to "BO-22".
+
+#### Critical Fix #2: Battery Response Byte 8 = 0x02 (not 0x01)
+
+This was likely **THE "Printer Busy" flag**:
+
+```
+Real Wide:  61 42 00 0d 00 02 00 01 02 41 00 10 f9 (byte 8 = 0x02)
+Old ESP32:  61 42 00 0D 00 02 00 01 01 XX 00 10 XX (byte 8 = 0x01)
+```
+
+- `0x01` = Printer Busy
+- `0x02` = Printer Ready
+
+**Fix:** Changed battery response byte 8 from `0x01` to `0x02` for Wide model.
+
+#### Critical Fix #3: Ping Response Byte 9 = 0x01 (mirrors byte 7)
+
+```
+Real Wide:  61 42 00 10 00 00 00 01 00 01 00 00 00 00 00 4a
+                              ^7    ^9 (both 0x01)
+```
+
+For Wide, byte 9 should mirror byte 7 (both 0x01), not be fixed at 0x02.
+
+**Fix:** Changed ping response to use model-specific value for byte 9.
+
+#### Critical Fix #4: Capability Byte Base = 0x20 (not 0x30)
+
+```
+Real Wide (4 films): 0x24 = 0x20 + 0x04
+Old ESP32 (8 films): 0x38 = 0x30 + 0x08
+```
+
+**Fix:** Changed Wide capability byte base from 0x30 to 0x20.
+
+### Current Response Comparison (After Fixes)
+
+| Response | ESP32 | Real Wide | Status |
+|----------|-------|-----------|--------|
+| Model Code | "BO-22" | "BO-22" | ✅ |
+| Ping byte 7 | 0x01 | 0x01 | ✅ |
+| Ping byte 9 | 0x01 | 0x01 | ✅ |
+| Battery byte 8 | 0x02 | 0x02 | ✅ |
+| Battery byte 9 | percentage | percentage | ✅ |
+| Capability base | 0x20 | 0x20 | ✅ |
+| Dimensions | 19 bytes | 19 bytes | ✅ |
+
+### Result: "Printer Busy" FIXED ✅
+
+After applying these fixes, the official INSTAX Wide app:
+- ✅ No longer shows "Printer Busy (1)" error
+- ✅ Proceeds to print when print button is tapped
+- ⚠️ **Crashes during print sequence** (same as Mini and Square apps)
+
+### Print Crash Fix: Print START ACK Format (December 27, 2025)
+
+All three official INSTAX apps were crashing ~120-220ms after receiving the print START ACK. Analysis of real Wide printer Bluetooth capture revealed the root cause:
+
+**The print START ACK was wrong format:**
+
+| Version | Response | Size |
+|---------|----------|------|
+| **Old (Wrong)** | `61 42 00 08 10 00 00 44` | 8 bytes |
+| **Real Wide** | `61 42 00 0C 10 00 00 00 00 03 84 B9 00` | 12 bytes |
+
+**The extra bytes matter:**
+- Bytes 7-8: `00 00` - Padding
+- Bytes 9-11: `03 84 B9` - Max buffer size (230,585 bytes = ~225KB)
+
+The app was expecting a 12-byte response with buffer size confirmation. Our 8-byte minimal ACK was malformed.
+
+**Fix applied:** `ble_peripheral.c` now sends 12-byte print START ACK matching real Wide printer format.
+
+### Packet Captures Available
+
+| File | Content | Status |
+|------|---------|--------|
+| `Real_iPhone_to_Wide_print_a.pklg` | Real Wide printer print (larger) | ✅ Used for analysis |
+| `Real_iPhone_to_Wide_print_b.pklg` | Real Wide printer print (latest) | ✅ Used for analysis |
+| `Sim_iPhone_to_Wide_printcrash_a.pklg` | Simulator crash capture | ✅ Used for diagnosis |
+| `Sim_iPhone_to_Wide_printcrash_b.pklg` | Simulator crash capture (latest) | ✅ Used for diagnosis |
+| `decoded_mini_link3.txt` | Mini Link 3 reference | ✅ Reference |
+
+### Files Modified
+
+- `printer_emulator.c:219-220` - Changed model code to "BO-22"
+- `ble_peripheral.c:553-561` - Fixed ping response bytes 7 and 9
+- `ble_peripheral.c:868-879` - Fixed battery response byte 8 to 0x02
+- `ble_peripheral.c:914-917` - Fixed capability byte base to 0x20
+- `ble_peripheral.c:1162-1195` - **Fixed print START ACK format (8→12 bytes)**

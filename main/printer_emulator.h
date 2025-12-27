@@ -105,13 +105,13 @@ esp_err_t printer_emulator_set_suspend_decrement(bool suspend);
 bool printer_emulator_get_suspend_decrement(void);
 
 /**
- * Set auto-sleep timeout (newly discovered protocol feature - Dec 2024)
+ * Set auto-sleep timeout (newly discovered protocol feature - Dec 2025)
  * @param timeout_minutes Timeout in minutes (0 = never, 1-255 = minutes)
  */
 esp_err_t printer_emulator_set_auto_sleep(uint8_t timeout_minutes);
 
 /**
- * Set print mode (newly discovered protocol feature - Dec 2024)
+ * Set print mode (newly discovered protocol feature - Dec 2025)
  * @param mode Print mode: 0x00 = Rich, 0x03 = Natural
  */
 esp_err_t printer_emulator_set_print_mode(uint8_t mode);

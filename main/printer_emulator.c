@@ -216,8 +216,8 @@ esp_err_t printer_emulator_reset_dis_to_defaults(void) {
             break;
 
         case INSTAX_MODEL_WIDE:
-            // Wide Link (FI022) - from nRF Connect capture
-            strncpy(s_printer_info.model_number, "FI022", sizeof(s_printer_info.model_number) - 1);
+            // Wide Link - real iPhone capture shows "BO-22" not "FI022"
+            strncpy(s_printer_info.model_number, "BO-22", sizeof(s_printer_info.model_number) - 1);
             strncpy(s_printer_info.serial_number, "20555555", sizeof(s_printer_info.serial_number) - 1);  // Wide pattern: 20XXXXXX
             strncpy(s_printer_info.firmware_revision, "0100", sizeof(s_printer_info.firmware_revision) - 1);  // Wide uses 0100, not 0101
             strncpy(s_printer_info.hardware_revision, "0001", sizeof(s_printer_info.hardware_revision) - 1);

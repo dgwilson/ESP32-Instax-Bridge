@@ -4,7 +4,7 @@ This document describes the protocols used to communicate with Fujifilm Instax p
 
 **Primary Implementation Based on:** [javl/InstaxBLE](https://github.com/javl/InstaxBLE) - Bluetooth protocol for Link printers
 **Additional Reference:** [jpwsutton/instax_api](https://github.com/jpwsutton/instax_api) - WiFi protocol for SP-2/SP-3 printers
-**Last Updated:** December 2025 (Wide FFE1 characteristic fix - Write/Notify not Read)
+**Last Updated:** December 27, 2025 (Wide "Printer Busy" fix - model code BO-22, battery byte 8 = 0x02)
 
 ---
 
@@ -100,7 +100,7 @@ The Instax Link printers use a packet-based command/response system where:
 - Mini Link 2: `"FI032"` (unconfirmed)
 - Mini Link 1: `"FI031"` (unconfirmed)
 - Square Link: `"FI017"`
-- Wide Link: `"FI022"`
+- Wide Link: **`"BO-22"`** ⚠️ (not "FI022" - verified Dec 27, 2025 via real packet capture)
 
 **Model-Specific Service Summary:**
 
@@ -164,7 +164,7 @@ All characteristics use the custom base UUID: `0000XXXX-3C17-D293-8E48-14FE2E4DA
 | Characteristic UUID | Properties | Data Size | Description |
 |---------------------|------------|-----------|-------------|
 | `0000FFE1-3C17...` | **Write/WriteNoResponse/Notify** | 12 bytes | **Battery & Film Count** (Status Request)<br>App writes to request status, printer responds via notification<br>Byte 0: Photos remaining (0-10)<br>Byte 1: Ready status (0x01 = ready, 0x00 = busy)<br>Bytes 2-7: Status bytes (0x00, 0x15, 0x00, 0x00, 0x4F, 0x00)<br>Byte 8: Battery level (0-200 scale, 0-100%)<br>Byte 9: Charging status (0xFF = not charging, 0x00 = charging)<br>Bytes 10-11: Status bytes (0x0F, 0x00) |
-| `0000FFE9-3C17...` | Write | Variable | Control/command characteristic (accepts writes from app) |
+| `0000FFE9-3C17...` | Write | Variable | **Control/Command** (Printer Ready Check)<br>App writes to check printer readiness before printing<br>When written, printer should send FFEA notification to confirm ready status<br>Without this response, official app shows "Printer Busy (1)" error |
 | `0000FFEA-3C17...` | Notify | 11 bytes | **Printer Ready Status** (CRITICAL)<br>Must send notification when client subscribes<br>Data pattern: `02 09 B9 00 11 01 00 80 84 1E 00`<br>Without this notification, official app shows "Printer Busy (1)" error |
 
 **⚠️ CRITICAL: FFE1 is NOT a Read characteristic!**
@@ -630,63 +630,67 @@ Higher file size limits remain unvalidated.
 |-----------|-------|
 | **Image Dimensions** | 1260 × 840 pixels |
 | **Chunk Size** | 900 bytes |
-| **Max File Size** | **105 KB** (working limit) |
-| **Theoretical Max** | 330 KB (protocol-reported, unvalidated) |
+| **Max File Size** | **~225 KB** (verified from print START ACK) |
+| **Theoretical Max** | 330 KB (protocol-reported) |
 | **Packet Delay** | **150ms** (physical printer) |
 | **Film Size** | 99 × 62 mm |
 | **Photos per Pack** | 10 |
 | **BLE Device Name** | `INSTAX-XXXXXXXX` (no suffix) |
-| **BLE Model Number** | `FI022` |
+| **BLE Model Number** | **`BO-22`** ⚠️ (not "FI022" - verified Dec 2025) |
 | **Firmware Revision** | `0100` (vs `0101` for Mini/Square) |
+
+> **⚠️ Model Code Update (December 27, 2025):** Real iPhone packet capture confirmed Wide Link reports model code **"BO-22"**, not "FI022" as previously documented. The Wide Link is an older model (micro USB vs USB-C on newer printers). The "BO" prefix may be an earlier Fujifilm naming convention before standardizing on "FI0xx".
 
 **BLE Services:**
 - Standard Print Service: `70954782-2d83-473d-9e5f-81e1d02d5273`
 - Wide-Specific Service: `0000E0FF-3C17-D293-8E48-14FE2E4DA212` (3 characteristics)
 - Device Information Service (DIS)
 
-**Implementation Note:** Protocol reports 330 KB (0x52800 bytes) via IMAGE_SUPPORT_INFO. Testing confirms the printer accepts files up to this size before rejecting with error `0x81`. However, this implementation uses the conservative 105 KB limit pending further validation of higher sizes. Wide requires the longest packet delay (150ms) despite using the same 900-byte packet size as Mini, likely due to the larger overall image size requiring more processing time.
+**Implementation Note (Updated December 27, 2025):** Real iPhone packet capture of successful Wide print shows:
+- Print START ACK returns max buffer size: `0x0384B9` = 230,585 bytes (~225 KB)
+- Real print job used 193,733 bytes (~189 KB) successfully
+- Official app sends ~200 KB images without issue
+Wide requires the longest packet delay (150ms) despite using the same 900-byte packet size as Mini, likely due to the larger overall image size requiring more processing time.
 
 **Wide-Specific BLE Profile:** Unlike Mini Link 3 (which uses service `0000D0FF`), Wide Link uses service `0000E0FF` with only 3 characteristics (FFE1, FFE9, FFEA). Wide does NOT advertise the Link 3 Status Service. See [Wide-Specific Service](#wide-specific-service) section for complete characteristic details.
 
-**🔍 Critical Protocol Differences (December 2025):**
+**🔍 Critical Protocol Differences (Updated December 27, 2025):**
 
 Wide Link has **model-specific protocol responses** that differ from Mini and Square:
 
-1. **Ping Response (Function 0x00, Operation 0x00) - Byte 9:**
-   - Wide Link: Byte 9 **MUST be `0x01`**
-   - Mini/Square: Byte 9 = `0x02`
-   - Real Wide printer response: `61 42 00 10 00 00 00 [01] 00 02 00 00 00 00 00 49`
-   - Mini printer response: `61 42 00 10 00 00 00 [02] 00 02 00 00 00 00 00 49`
+1. **Ping Response (Function 0x00, Operation 0x00) - Bytes 7 & 9:**
+   - Wide Link: Byte 7 = `0x01`, Byte 9 = `0x01` (mirrors byte 7)
+   - Mini/Square: Byte 7 = `0x02`, Byte 9 = `0x02`
+   - Real Wide (BO-22): `61 42 00 10 00 00 00 [01] 00 [01] 00 00 00 00 00 4A`
+   - Mini Link 3: `61 42 00 10 00 00 00 [02] 00 [02] 00 00 00 00 00 49`
 
 2. **Dimensions Response (Function 0x00, Operation 0x02, Type 0x00):**
    - Wide Link: **19 bytes total** (length = 0x13)
    - Mini/Square: 23 bytes total (length = 0x17)
    - Wide-specific capability bytes at positions 12-17: `02 7B 00 05 28 00`
-   - Real Wide: `61 42 00 13 00 02 00 00 04 EC 03 48 02 7B 00 05 28 00 XX`
+   - Real Wide: `61 42 00 13 00 02 00 00 04 EC 03 48 02 7B 00 05 28 00 62`
      - Width: 0x04EC = 1260
      - Height: 0x0348 = 840
      - Capability bytes differ from Mini/Square
 
 3. **Battery Info Response (Function 0x00, Operation 0x02, Type 0x01):**
-   - Byte 8 **MUST be `0x01`** for Wide Link (vs `0x03` for Mini Link)
-   - This byte appears to be a ready/busy indicator specific to each model
-   - Real Wide printer response: `61 42 00 0D 00 02 00 01 [01] 05 00 10 36`
-   - Mini printer response: `61 42 00 0D 00 02 00 01 [03] 50 00 10 E9`
+   - **⚠️ CRITICAL (Fixed Dec 27, 2025):** Byte 8 is the **BUSY FLAG**
+   - Wide Link: Byte 8 = `0x02` (READY), `0x01` = BUSY!
+   - Mini Link: Byte 8 = `0x03`
+   - Real Wide (ready): `61 42 00 0D 00 02 00 01 [02] 41 00 10 F9`
+   - Mini Link 3: `61 42 00 0D 00 02 00 01 [03] 50 00 10 E9`
+   - Byte 9: Battery percentage (0x41 = 65%, 0x50 = 80%)
 
 4. **Printer Function Response (Function 0x00, Operation 0x02, Type 0x02):**
-   - **⚠️ UPDATED December 2025:** Wide Link uses **SAME encoding as Square Link**
+   - **⚠️ UPDATED December 27, 2025:** Wide Link uses base `0x20` (same as Square)
    - Capability byte (byte 8 in full packet / payload[2]) encodes film count in lower nibble
-   - Real Wide printer response (4 films): `61 42 00 11 00 02 00 02 [34] 00 00 0C 00 00 00 00 XX`
-     - Capability: `0x34` = `0x30` (Wide base) + `0x04` (4 films) ✅ VERIFIED
-     - Payload[5] (byte 11): `0x0C` (12) - NOT film count, purpose unknown
-   - Real Wide printer response (13 films): `61 42 00 11 00 02 00 02 [3D] 00 00 0C 00 00 00 00 XX`
-     - Capability: `0x3D` = `0x30` (Wide base) + `0x0D` (13 films) ✅ EXPECTED
-   - Compare to Mini: `61 42 00 11 00 02 00 02 [38] 00 00 08 00 00 00 00 13`
-     - Capability: `0x38` = `0x30` base + `0x08` photos (encoded)
-     - Photos: byte 11 = `0x08` (redundant)
+   - Real Wide printer response (4 films): `61 42 00 11 00 02 00 02 [24] 00 00 0D 00 00 00 00 16`
+     - Capability: `0x24` = `0x20` (Wide base) + `0x04` (4 films) ✅ VERIFIED
+     - Payload[5] (byte 11): `0x0D` (13) - NOT film count, purpose unknown
    - Compare to Square (6 films): `61 42 00 11 00 02 00 02 [26] 00 00 0C 00 00 00 00 XX`
      - Capability: `0x26` = `0x20` (Square base) + `0x06` (6 films) ✅ VERIFIED
-     - Payload[5]: `0x0C` (12) - NOT film count (same mystery value as Wide)
+   - Compare to Mini: `61 42 00 11 00 02 00 02 [38] 00 00 08 00 00 00 00 13`
+     - Capability: `0x38` = `0x30` base + `0x08` photos (encoded)
 
 5. **Additional Info Type 0x01 Response (Function 0x30, Operation 0x10, Type 0x01):**
    - Wide Link: Specific bytes at positions 11-15: `1E 00 01 01 00`
@@ -1713,7 +1717,7 @@ The ESP32 Instax Bridge simulator requires significantly longer packet delays du
 
 ## Official Instax App Compatibility
 
-**Status:** ✅ **FULL COMPATIBILITY ACHIEVED** (December 2024) - All three printer models working!
+**Status:** ✅ **FULL COMPATIBILITY ACHIEVED** (December 2025) - All three printer models working!
 
 **Note:** This section documents ESP32 Instax Bridge simulator compatibility with official Instax apps, not core protocol behavior.
 
@@ -2102,7 +2106,7 @@ For complete investigation details, see the ESP32 Instax Bridge project document
 
 This investigation revealed critical requirements for official app compatibility:
 
-**Mini Link 3 Breakthrough (December 2024):**
+**Mini Link 3 Breakthrough (December 2025):**
 - Link 3-specific services (Info and Status) are **MANDATORY** for Mini app discovery
 - Without these services, the app will not show the device in the list at all
 - All Link 3 Info Service characteristics must return exact values matching real device
@@ -2951,12 +2955,20 @@ Payload breakdown:
              = 65536 + 31488 + 144
              = 97,168 bytes (~95KB)
 
-Response: 61 42 00 0c 10 00 00 00 00 07 10 29
-          ^^^^^^ ^^^^^ ^^^^^ ^^^^^^^^^^^^^ ^^
-          Header Length Func  Payload        Checksum
+Response: 61 42 00 0C 10 00 00 00 00 03 84 B9 00
+          ^^^^^^ ^^^^^ ^^^^^ ^^^^^^^^^^^^^^^^^^^^^ ^^
+          Header Length Func  Payload (6 bytes)     Checksum
                         Op=00
 
-Response payload: 00 00 00 07 10 (6 bytes, meaning unclear)
+Response payload breakdown (UPDATED December 27, 2025):
+  Byte 6: 00 - Status (0x00 = OK, 0xB1 = error)
+  Byte 7-8: 00 00 - Padding
+  Byte 9-11: 03 84 B9 - Max buffer size (230,585 bytes = ~225KB)
+
+⚠️ CRITICAL: Response MUST be 12 bytes, not 8 bytes!
+   Old (wrong): 61 42 00 08 10 00 00 XX (8 bytes - causes app crash)
+   New (correct): 61 42 00 0C 10 00 00 00 00 03 84 B9 XX (12 bytes)
+   The extra bytes contain max buffer size confirmation.
 ```
 
 **Purpose:** Tell printer total file size and format, prepare to receive data
@@ -3131,6 +3143,39 @@ Time to execute: ~3-10 seconds depending on image size and BLE speed
 ---
 
 ## Changelog
+
+### December 27, 2024 (Wide Link "Printer Busy" Fix - BREAKTHROUGH!)
+
+**ROOT CAUSE IDENTIFIED:** Real iPhone packet capture of Wide printer print revealed critical protocol differences.
+
+- **CRITICAL: Model code is "BO-22" not "FI022"**
+  - Real Wide Link (micro USB model) reports "BO-22" in model query response
+  - The "BO" prefix may be an earlier naming convention before "FI0xx" standardization
+  - Changed `printer_emulator.c` to use "BO-22" for Wide model
+
+- **CRITICAL: Battery byte 8 is the BUSY FLAG**
+  - Byte 8 = `0x02` means READY
+  - Byte 8 = `0x01` means BUSY (this was causing "Printer Busy (1)" error!)
+  - Changed battery response from `0x01` to `0x02` for Wide
+
+- **Ping response bytes 7 and 9 should match**
+  - Wide: Both byte 7 and byte 9 = `0x01`
+  - Mini/Square: Both byte 7 and byte 9 = `0x02`
+  - Previously byte 9 was hardcoded to `0x02` for all models
+
+- **Capability byte base is 0x20 (not 0x30)**
+  - Real Wide (4 films) sends `0x24` = `0x20` + `0x04`
+  - Wide uses same encoding as Square Link
+  - Changed capability base from `0x30` to `0x20`
+
+- **RESULT: "Printer Busy (1)" error is now FIXED ✅**
+  - Official INSTAX Wide app now proceeds to print
+  - However, all official apps (Mini, Square, Wide) crash during print sequence
+  - Crash occurs ~120ms after print START ACK, before DATA transfer
+
+- **New packet captures added:**
+  - `Real_iPhone_to_Wide_print_a.pklg` - Full print sequence from real Wide
+  - `Real_iPhone_to_Wide_print_b.pklg` - Latest capture (smaller)
 
 ### December 2025 (Wide Link MAC Address Discovery)
 - **CRITICAL DISCOVERY: Wide Link uses DIFFERENT MAC pattern than Mini/Square**

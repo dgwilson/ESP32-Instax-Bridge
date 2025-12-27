@@ -52,6 +52,8 @@ static bool s_connected = false;
 static bool s_bonding_enabled = true;  // Bonding preference (loaded from NVS at init)
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_notify_handle = 0;
+static uint16_t s_indicate_handle = 0;  // For Wide: write char that supports indications
+static uint16_t s_subscribed_indicate_handle = 0;  // Handle the app actually subscribed to for indications
 
 // Print state
 static uint32_t s_print_image_size = 0;
@@ -330,9 +332,12 @@ static const struct ble_gatt_svc_def gatt_svr_svcs_wide[] = {
         .uuid = &instax_service_uuid.u,
         .characteristics = (struct ble_gatt_chr_def[]) {
             {
+                // Wide app subscribes to INDICATIONS on this characteristic (handle 8)
+                // Adding INDICATE flag so we can send print responses as indications
                 .uuid = &instax_write_char_uuid.u,
                 .access_cb = gatt_svr_chr_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+                .val_handle = &s_indicate_handle,  // Save handle for sending indications
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_INDICATE,
             },
             {
                 .uuid = &instax_notify_char_uuid.u,
@@ -381,16 +386,13 @@ static esp_err_t send_notification(const uint8_t *data, size_t len) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    // CRITICAL: Block ALL notifications during active print upload except DATA packet ACKs
-    // This prevents BLE bandwidth saturation from status queries
-    bool is_data_ack = (len >= 6 && data[4] == 0x10 && data[5] == 0x01);
-    bool is_print_cmd = (len >= 6 && data[4] == 0x10); // Any print-related command
+    // During active print upload, we must still respond to essential queries
+    // Only block unsolicited status updates, not responses to app queries
+    // The blocking was causing timeout because INFO_QUERY responses were dropped!
+    // FIX (Dec 2025): Allow all responses during print - the app needs them
 
-    if (s_print_in_progress && !is_print_cmd) {
-        // Silently drop non-print notifications during upload
-        // This blocks status query responses that saturate BLE bandwidth
-        return ESP_OK;
-    }
+    // Check if this is a DATA packet ACK for logging purposes
+    bool is_data_ack = (len >= 6 && data[4] == 0x10 && data[5] == 0x01);
 
     // Retry loop for reliable ACK delivery
     int retry;
@@ -448,6 +450,51 @@ static esp_err_t send_notification(const uint8_t *data, size_t len) {
     ESP_LOGE(TAG, "❌ CRITICAL: ACK LOST after %d retries! Total failures: %lu",
              ACK_RETRY_COUNT, (unsigned long)s_ack_fail_count);
     return ESP_FAIL;
+}
+
+/**
+ * Send an indication (for Wide model print responses)
+ * Wide app subscribes to indications on the write characteristic (handle 8)
+ * We use the handle that the app actually subscribed to, not the one from GATT registration
+ */
+static esp_err_t send_indication(const uint8_t *data, size_t len) {
+    if (!s_connected || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        ESP_LOGW(TAG, "Cannot send indication: not connected");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // Use the handle the app actually subscribed to for indications
+    uint16_t use_handle = s_subscribed_indicate_handle;
+    if (use_handle == 0) {
+        // Fall back to the registered handle if no subscription recorded
+        use_handle = s_indicate_handle;
+        ESP_LOGW(TAG, "No subscribed indication handle, using registered handle %d", use_handle);
+    }
+
+    if (use_handle == 0) {
+        ESP_LOGW(TAG, "Cannot send indication: no valid handle");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
+    if (om == NULL) {
+        ESP_LOGE(TAG, "mbuf allocation failed for indication");
+        return ESP_ERR_NO_MEM;
+    }
+
+    int rc = ble_gatts_indicate_custom(s_conn_handle, use_handle, om);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ble_gatts_indicate_custom failed: %d (handle %d)", rc, use_handle);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "📨 Sent indication (%d bytes) on handle %d", len, use_handle);
+    ESP_LOGI(TAG, "   First bytes: %02X %02X %02X %02X %02X %02X %02X %02X",
+            len > 0 ? data[0] : 0, len > 1 ? data[1] : 0,
+            len > 2 ? data[2] : 0, len > 3 ? data[3] : 0,
+            len > 4 ? data[4] : 0, len > 5 ? data[5] : 0,
+            len > 6 ? data[6] : 0, len > 7 ? data[7] : 0);
+    return ESP_OK;
 }
 
 /**
@@ -551,11 +598,12 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                 response[4] = function;
                 response[5] = operation;
                 // Device identification payload (9 bytes)
-                // Real Wide sends: 00 01 00 01 00 00 00 00 00
-                // Real Mini/Square sends: 00 01 00 02 00 00 00 00 00
-                // Byte 9 is model-specific: Wide=0x01, Mini/Square=0x02
+                // Real Wide (BO-22 capture): 61 42 00 10 00 00 00 01 00 01 00 00 00 00 00 4a
+                // Real Mini Link 3:          61 42 00 10 00 00 00 02 00 02 00 00 00 00 00 49
+                // Byte 7: Wide=0x01, Mini/Square=0x02
+                // Byte 9: Wide=0x01, Mini/Square=0x02 (mirrors byte 7)
                 response[6] = 0x00;
-                response[7] = 0x01;
+                response[7] = (info->model == INSTAX_MODEL_WIDE) ? 0x01 : 0x02;
                 response[8] = 0x00;
                 response[9] = (info->model == INSTAX_MODEL_WIDE) ? 0x01 : 0x02;
                 response[10] = 0x00;
@@ -617,7 +665,7 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                             break;
                         }
                         case 0x04: {
-                            // Firmware revision - new query type discovered Dec 2024
+                            // Firmware revision - new query type discovered Dec 2025
                             // Format: [00 04] [length] "0101" (Mini/Square) or "0100" (Wide)
                             ESP_LOGI(TAG, "Sending firmware revision");
                             const char *fw_str = info->firmware_revision; // Use actual configured firmware
@@ -856,18 +904,23 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                             break;
 
                         case INSTAX_INFO_BATTERY:
-                            // Payload: [0-1: header] [2: data_len] [3: state] [4: percentage] [5-6: extra]
+                            // Payload: [0-1: header] [2: data_len] [3: percentage] [4-5: extra]
                             // Real Mini Link 3 sends: [61 42 00 0d 00 02 00 01] [03 50 00 10] [e9]
-                            // Real Wide Link sends: [61 42 00 0d 00 02 00 01] [01 05 00 10] [36]
-                            // Byte 8 is model-specific: Mini=0x03, Wide=0x01 (possibly ready/busy indicator)
-                            // Byte 11 is ALWAYS 0x10 (16) on real printer - not film count! (voltage? capacity indicator?)
+                            // Real Wide (BO-22) sends: [61 42 00 0d 00 02 00 01] [02 41 00 10] [f9]
+                            // Byte 8: Mini=0x03, Wide=0x02 (CRITICAL: 0x01 may mean "busy"!)
+                            // Byte 9: Battery percentage (0x41=65% for Wide, 0x50=80% for Mini)
+                            // Byte 11 is ALWAYS 0x10 (16) on real printer
                             ESP_LOGI(TAG, "Sending battery info: state=%d, %d%%",
                                     info->battery_state, info->battery_percentage);
                             response[6] = 0x00; // Payload header byte 0
                             response[7] = 0x01; // Payload header byte 1 (matches query type)
-                            // Byte 8 varies by model - Wide uses 0x01 (ready), Mini uses 0x03
-                            response[8] = (info->model == INSTAX_MODEL_WIDE) ? 0x01 : 0x03;
-                            response[9] = info->battery_percentage; // Battery percentage (0x50 = 80%)
+                            // Byte 8: Wide uses 0x02 (ready), Mini uses 0x03
+                            // CRITICAL: 0x01 may indicate "printer busy" state!
+                            response[8] = (info->model == INSTAX_MODEL_WIDE) ? 0x02 : 0x03;
+                            // Byte 9: All models use battery percentage (0-100)
+                            response[9] = info->battery_percentage;
+                            ESP_LOGI(TAG, "  Battery response: byte8=0x%02x (ready), byte9=0x%02x (%d%%)",
+                                    response[8], response[9], info->battery_percentage);
                             response[10] = 0x00; // Extra byte 1
                             response[11] = 0x10; // ALWAYS 0x10 (16) - matches real printer exactly!
                             response_len = 12; // Header(2) + Length(2) + Func(1) + Op(1) + Payload(6) = 12, checksum added later
@@ -882,11 +935,11 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                             response[6] = 0x00; // Payload header byte 0
                             response[7] = 0x02; // Payload header byte 1 (matches query type)
 
-                            // Capability byte encoding (VERIFIED with real printers Dec 2024):
+                            // Capability byte encoding (VERIFIED with real printer captures Dec 2025):
                             // Format: [Bit 7: Charging] [Bits 4-6: Model flags] [Bits 0-3: Photos remaining 0-10]
                             //
-                            // WIDE LINK (FI022): Base 0x30 (0011 0000) - CORRECTED Dec 20, 2024
-                            //   Real printer with 4 films: 0x34 = 0x30 | 0x04
+                            // WIDE LINK (BO-22/FI022): Base 0x20 (0010 0000) - CORRECTED Dec 27, 2025
+                            //   Real capture with 4 films: 0x24 = 0x20 | 0x04
                             //   Film count stored in LOWER NIBBLE (bits 0-3) of capability byte
                             //   Moments Print reads payload[2] & 0x0F for Wide
                             //
@@ -902,8 +955,9 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                             if (film_count > 10) film_count = 10;
 
                             if (info->model == INSTAX_MODEL_WIDE) {
-                                // Wide Link base flags: 0011 0000 (0x30) - VERIFIED with real FI022
-                                capability = 0x30 | (film_count & 0x0F);
+                                // Wide Link base flags: 0010 0000 (0x20) - VERIFIED with real BO-22 capture
+                                // Real Wide capture shows 0x24 = 0x20 + 0x04 (4 films)
+                                capability = 0x20 | (film_count & 0x0F);
                             } else if (info->model == INSTAX_MODEL_MINI) {
                                 // Mini Link 3 base flags: 0011 0000 (0x30) - needs verification
                                 capability = 0x30 | (film_count & 0x0F);
@@ -924,14 +978,17 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                             response[9] = 0x00;  // Reserved byte 1
                             response[10] = 0x00; // Reserved byte 2
 
-                            // Payload[5] behavior differs by model (UPDATED Dec 2024):
+                            // Payload[5] behavior differs by model (UPDATED Dec 2025):
                             // - Square: Sends 0x0C (unknown purpose, NOT film count) - VERIFIED with real FI017
-                            // - Wide: Sends 0x0C (unknown purpose, NOT film count) - VERIFIED with real FI022
+                            // - Wide: Sends 0x0D (13) - observed in print capture vs 0x0C during connection
                             // - Older Mini 1/2: Contains actual film count (capability byte 0x10-0x1F range)
                             // Both Square and Wide use capability byte lower nibble for film count!
-                            if (info->model == INSTAX_MODEL_WIDE || info->model == INSTAX_MODEL_SQUARE) {
-                                // Square/Wide: Real printers send 0x0C here regardless of film count
-                                // Possibly total pack capacity (10 sheets + 2 calibration = 12?)
+                            if (info->model == INSTAX_MODEL_WIDE) {
+                                // Wide: Testing 0x0D based on print capture comparison (Dec 2025)
+                                // Previous 0x0C may have been from connection-only captures
+                                response[11] = 0x0D; // Try 0x0D (13) instead of 0x0C (12)
+                            } else if (info->model == INSTAX_MODEL_SQUARE) {
+                                // Square: Real printers send 0x0C here
                                 response[11] = 0x0C; // Match real printer behavior
                             } else {
                                 // Older Mini 1/2: Actual film count in payload[5]
@@ -979,32 +1036,9 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                             response[15] = 0x07; // Testing: use real printer's exact value
                             response_len = 16; // Header(2) + Length(2) + Func(1) + Op(1) + Payload(10) = 16, checksum added later
 
-                            // For Wide printers, send status notification on standard service after history query
-                            // This may signal "initialization complete, ready for printing"
-                            if (info->model == INSTAX_MODEL_WIDE) {
-                                ESP_LOGI(TAG, "Wide: Sending status notification after print history");
-                                // Brief delay to let the history response send first
-                                vTaskDelay(pdMS_TO_TICKS(100));
-                                // Send status in INSTAX protocol format
-                                uint8_t status_notify[12];
-                                status_notify[0] = 0x61; // Header
-                                status_notify[1] = 0x42;
-                                status_notify[2] = 0x00; // Length high
-                                status_notify[3] = 0x0C; // Length low (12)
-                                status_notify[4] = 0x00; // Function
-                                status_notify[5] = 0x00; // Operation (status)
-                                status_notify[6] = 0x00; // Status OK
-                                status_notify[7] = 0x01; // Ready flag
-                                status_notify[8] = 0x00;
-                                status_notify[9] = 0x00;
-                                status_notify[10] = 0x00;
-                                status_notify[11] = instax_calculate_checksum(status_notify, 11);
-                                struct os_mbuf *om = ble_hs_mbuf_from_flat(status_notify, sizeof(status_notify));
-                                if (om) {
-                                    int rc = ble_gatts_notify_custom(s_conn_handle, s_notify_handle, om);
-                                    ESP_LOGI(TAG, "Wide: Sent ready status notification on standard service, rc=%d", rc);
-                                }
-                            }
+                            // NOTE: Previously tried sending FFEA notification here, but app doesn't subscribe
+                            // to Wide service handles (FFE1=22, FFEA=27) - only standard service (8, 18)
+                            // Removed to avoid potential issues from unsolicited notifications
                             break;
 
                         default:
@@ -1031,7 +1065,7 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
         }
 
         case INSTAX_FUNC_DEVICE_CONTROL: {
-            // Device control operations (newly discovered - Dec 2024)
+            // Device control operations (newly discovered - Dec 2025)
             ESP_LOGI(TAG, "Device control operation: 0x%02x", operation);
 
             switch (operation) {
@@ -1176,24 +1210,52 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                         }
 
                         // Send response (ACK if successful, error if failed)
+                        // Real Wide printer (successful print capture):
+                        //   61 42 00 0C 10 00 00 00 00 03 84 B9 00
+                        //   13 bytes total: 12 data bytes + 1 checksum byte
+                        //   Length field = 0x0C (12) = data bytes only (checksum not counted)
+                        //   Payload: Status(1) + Padding(2) + MaxSize(3) = 6 bytes
+                        //   0x0384B9 = 230,585 bytes max buffer size
                         response[0] = INSTAX_HEADER_FROM_DEVICE_0;
                         response[1] = INSTAX_HEADER_FROM_DEVICE_1;
-                        response_len = 8; // Header(2) + Length(2) + Func(1) + Op(1) + Status(1) + Checksum(1)
-                        response[2] = (response_len >> 8) & 0xFF; // Length high byte
-                        response[3] = response_len & 0xFF;         // Length low byte
+                        // Length field = 12 (excludes checksum byte)
+                        response[2] = 0x00; // Length high byte
+                        response[3] = 0x0C; // Length low byte (12 data bytes)
                         response[4] = function;
                         response[5] = operation;
 
                         if (print_start_ok) {
-                            response[6] = 0x00; // Status: OK
-                            ESP_LOGI(TAG, "🚀 Sending print start ACK (timestamp: %lu ms)", (unsigned long)esp_log_timestamp());
+                            response[6] = 0x00;  // Status: OK
+                            response[7] = 0x00;  // Padding byte 1 (matches real Wide)
+                            response[8] = 0x00;  // Padding byte 2 (matches real Wide)
+                            // Max buffer size: 0x0384B9 = 230,585 bytes (matches real Wide capture)
+                            response[9] = 0x03;  // Max size high byte
+                            response[10] = 0x84; // Max size mid byte
+                            response[11] = 0xB9; // Max size low byte (230,585 bytes = ~225KB)
+                            ESP_LOGI(TAG, "🚀 Sending print start ACK (13 bytes, timestamp: %lu ms)", (unsigned long)esp_log_timestamp());
                         } else {
                             response[6] = 0xB1; // Status: Error 177 (out of memory)
+                            response[7] = 0x00;
+                            response[8] = 0x00;
+                            response[9] = 0x00;
+                            response[10] = 0x00;
+                            response[11] = 0x00;
                             ESP_LOGE(TAG, "❌ Sending print start ERROR (out of memory)");
                         }
 
-                        response[7] = instax_calculate_checksum(response, 7);
-                        send_notification(response, response_len);
+                        // Checksum is calculated over 12 data bytes (0-11), then appended as byte 12
+                        // Total packet sent = 13 bytes (matching real Wide printer)
+                        response[12] = instax_calculate_checksum(response, 12);
+                        response_len = 13; // Send all 13 bytes
+
+                        // Wide app subscribes to INDICATIONS on write char - try sending ACK as indication
+                        const instax_printer_info_t *model_info = printer_emulator_get_info();
+                        if (model_info->model == INSTAX_MODEL_WIDE && s_indicate_handle != 0) {
+                            ESP_LOGI(TAG, "🎯 Wide model: Sending print START ACK as INDICATION");
+                            send_indication(response, response_len);
+                        } else {
+                            send_notification(response, response_len);
+                        }
 
                         if (print_start_ok) {
                             ESP_LOGI(TAG, "✅ Print start ACK sent (timestamp: %lu ms)", (unsigned long)esp_log_timestamp());
@@ -1224,11 +1286,13 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                 case INSTAX_OP_PRINT_DATA: {
                     // Print data chunk
                     // Payload format: [0-3: chunk index] [4+: actual image data]
-                    // Logging disabled to prevent BLE packet processing delays
-                    // if (s_print_chunk_index % 20 == 0) {
-                    //     ESP_LOGD(TAG, "Print data: chunk=%lu len=%d",
-                    //             (unsigned long)s_print_chunk_index, payload_len);
-                    // }
+                    // Log first chunk and every 50th chunk to verify data is arriving
+                    if (s_print_chunk_index == 0) {
+                        ESP_LOGI(TAG, "📦 FIRST DATA chunk received! len=%d", payload_len);
+                    } else if (s_print_chunk_index % 50 == 0) {
+                        ESP_LOGI(TAG, "📦 Data chunk %lu received, len=%d",
+                                (unsigned long)s_print_chunk_index, payload_len);
+                    }
 
                     if (s_print_data_callback && payload_len > 4) {
                         // Skip first 4 bytes (chunk index) and only pass the actual image data
@@ -1441,7 +1505,7 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
 
                 case INSTAX_OP_COLOR_CORRECTION: {
                     // Color correction table upload (function 0x30, operation 0x01)
-                    // Newly discovered Dec 2024 - includes print mode in first byte
+                    // Newly discovered Dec 2025 - includes print mode in first byte
                     // Payload: [mode] [color_correction_table...]
                     // mode: 0x00 = Rich (311 bytes total), 0x03 = Natural (251 bytes total)
 
@@ -1777,8 +1841,12 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
 
             if (event->subscribe.cur_indicate && !event->subscribe.prev_indicate) {
                 ESP_LOGI(TAG, "   ✅ Client SUBSCRIBED to indications on handle %d", event->subscribe.attr_handle);
+                // Save the handle the app subscribed to - we'll use this for sending indications
+                s_subscribed_indicate_handle = event->subscribe.attr_handle;
+                ESP_LOGI(TAG, "   🎯 Saved indication handle %d for Wide print responses", s_subscribed_indicate_handle);
             } else if (!event->subscribe.cur_indicate && event->subscribe.prev_indicate) {
                 ESP_LOGI(TAG, "   ❌ Client UNSUBSCRIBED from indications on handle %d", event->subscribe.attr_handle);
+                s_subscribed_indicate_handle = 0;
             }
 
             // Log which characteristic this is
@@ -2142,7 +2210,7 @@ static int link3_info_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         }
         else if (ble_uuid_cmp(uuid, &link3_fff1_uuid.u) == 0) {
             // FFF1 - Contains battery and film count for Link 3
-            // Format from INSTAX_PROTOCOL.md (VERIFIED Dec 2024):
+            // Format from INSTAX_PROTOCOL.md (VERIFIED Dec 2025):
             // Byte 0: Photos USED (0-10) - NOT remaining!
             // Byte 8: Battery level (raw, 0-200 scale)
             // Byte 9: Charging status (0xFF = NOT charging)
@@ -2345,8 +2413,21 @@ static int wide_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         }
         else if (ble_uuid_cmp(uuid, &wide_ffe9_uuid.u) == 0) {
             // FFE9 - Command/control characteristic
-            ESP_LOGI(TAG, "Wide: FFE9 write (%d bytes)", OS_MBUF_PKTLEN(ctxt->om));
-            // Accept the write but don't process it for now
+            // App may write here to check printer readiness before printing
+            // Without FFEA response, official app shows "Printer Busy (1)" error
+            uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
+            uint8_t write_data[32] = {0};
+            uint16_t copy_len = (len < sizeof(write_data)) ? len : sizeof(write_data);
+            os_mbuf_copydata(ctxt->om, 0, copy_len, write_data);
+
+            ESP_LOGI(TAG, "Wide: FFE9 write (%d bytes) - sending FFEA notification", len);
+            if (len > 0) {
+                ESP_LOGI(TAG, "  FFE9 data: %02X %02X %02X %02X...",
+                        write_data[0], write_data[1], write_data[2], write_data[3]);
+            }
+
+            // Send FFEA notification in response to FFE9 write
+            send_wide_ffea_notification();
             return 0;
         }
     }
