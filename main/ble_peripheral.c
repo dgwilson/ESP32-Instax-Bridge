@@ -1548,16 +1548,27 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                     if (query_type == 0x00) {
                         // 17-byte response with sensor data
                         // Real Mini during successful print: 61 42 00 11 30 10 00 00 be 19 00 fc 00 00 00 00 XX
-                        // (earlier connection used different values: c3 80 00 be...)
+                        // Real Square during successful print: 61 42 00 11 30 10 00 00 c1 a6 00 d2 00 00 00 00 XX
+                        const instax_printer_info_t *info = printer_emulator_get_info();
                         response_len = 17;
                         response[2] = 0x00; // Length high byte
                         response[3] = 0x11; // Length low byte (17)
                         response[6] = 0x00; // Payload header 1
                         response[7] = 0x00; // Payload header 2 (matches query type)
-                        response[8] = 0xbe; // Updated to match successful print capture
-                        response[9] = 0x19;
-                        response[10] = 0x00;
-                        response[11] = 0xfc;
+
+                        if (info->model == INSTAX_MODEL_SQUARE) {
+                            // Square-specific sensor data from real FI017 capture
+                            response[8] = 0xc1;
+                            response[9] = 0xa6;
+                            response[10] = 0x00;
+                            response[11] = 0xd2;
+                        } else {
+                            // Mini sensor data from successful print capture
+                            response[8] = 0xbe;
+                            response[9] = 0x19;
+                            response[10] = 0x00;
+                            response[11] = 0xfc;
+                        }
                         response[12] = 0x00;
                         response[13] = 0x00;
                         response[14] = 0x00;
@@ -1568,8 +1579,9 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
 
                     } else if (query_type == 0x01) {
                         // 21-byte response with different sensor data
-                        // Real Wide:  61 42 00 15 30 10 00 01 00 00 00 1e 00 01 01 00 00 00 00 00 XX
-                        // Real Mini:  61 42 00 15 30 10 00 01 00 00 00 02 ff 00 01 02 00 00 00 00 XX
+                        // Real Wide:   61 42 00 15 30 10 00 01 00 00 00 1e 00 01 01 00 00 00 00 00 XX
+                        // Real Mini:   61 42 00 15 30 10 00 01 00 00 00 2a 01 00 01 01 00 00 00 00 XX
+                        // Real Square: 61 42 00 15 30 10 00 01 00 00 00 04 ff 00 01 02 00 00 00 00 XX
                         const instax_printer_info_t *info = printer_emulator_get_info();
                         response_len = 21;
                         response[2] = 0x00; // Length high byte
@@ -1587,15 +1599,20 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                             response[13] = 0x01; // Wide: 0x01
                             response[14] = 0x01; // Wide: 0x01
                             response[15] = 0x00; // Wide: 0x00
-                        } else {
-                            // Mini/Square sensor data - using values from successful print session
-                            // Real Mini before print: 00 00 00 2a 01 00 01 01 00 00 00 00
-                            // (earlier session had different values: 02 ff 00 01 02)
-                            response[11] = 0x2a; // Changed from 0x02 - matches successful print capture
-                            response[12] = 0x01; // Changed from 0xff
+                        } else if (info->model == INSTAX_MODEL_SQUARE) {
+                            // Square-specific sensor data from real FI017 capture
+                            response[11] = 0x04;
+                            response[12] = 0xff;
                             response[13] = 0x00;
                             response[14] = 0x01;
-                            response[15] = 0x01; // Changed from 0x02
+                            response[15] = 0x02;
+                        } else {
+                            // Mini sensor data from successful print session
+                            response[11] = 0x2a;
+                            response[12] = 0x01;
+                            response[13] = 0x00;
+                            response[14] = 0x01;
+                            response[15] = 0x01;
                         }
                         response[16] = 0x00;
                         response[17] = 0x00;

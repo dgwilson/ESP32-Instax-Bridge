@@ -4,7 +4,7 @@ This document describes the protocols used to communicate with Fujifilm Instax p
 
 **Primary Implementation Based on:** [javl/InstaxBLE](https://github.com/javl/InstaxBLE) - Bluetooth protocol for Link printers
 **Additional Reference:** [jpwsutton/instax_api](https://github.com/jpwsutton/instax_api) - WiFi protocol for SP-2/SP-3 printers
-**Last Updated:** December 27, 2025 (Mini Link & Wide Link Official App Printing - COMPLETE SUCCESS!)
+**Last Updated:** December 27, 2025 (ALL THREE Official Apps - Mini, Square, Wide - COMPLETE SUCCESS!)
 
 ---
 
@@ -707,22 +707,27 @@ Wide Link has **model-specific protocol responses** that differ from Mini and Sq
 5. **Additional Info Type 0x01 Response (Function 0x30, Operation 0x10, Type 0x01):**
    - Wide Link: Bytes 11-15: `29 1E 00 01 01 00`
    - Mini Link: Bytes 11-15: `2a 01 00 01 01` ✅ VERIFIED
+   - Square Link: Bytes 11-15: `04 ff 00 01 02` ✅ VERIFIED
    - Real Wide: `61 42 00 15 30 10 00 01 00 00 00 29 1E 00 01 01 00 00 00 00 XX`
    - Real Mini: `61 42 00 15 30 10 00 01 00 00 00 2a 01 00 01 01 00 00 00 00 XX`
+   - Real Square: `61 42 00 15 30 10 00 01 00 00 00 04 ff 00 01 02 00 00 00 00 XX`
    - These bytes indicate model-specific hardware capabilities
 
 6. **Additional Info Type 0x00 Response (Function 0x30, Operation 0x10, Type 0x00):**
    - Mini Link: Bytes 8-11: `be 19 00 fc` (sensor/capability data) ✅ VERIFIED
+   - Square Link: Bytes 8-11: `c1 a6 00 d2` (sensor/capability data) ✅ VERIFIED
    - Real Mini: `61 42 00 11 30 10 00 00 be 19 00 fc 00 00 00 00 XX`
+   - Real Square: `61 42 00 11 30 10 00 00 c1 a6 00 d2 00 00 00 00 XX`
 
 **Official App Compatibility Notes (Updated December 2025):**
+- ✅ **ALL THREE OFFICIAL APPS NOW WORKING** (Mini, Square, Wide)
 - ✅ **FFE1 characteristic fixed:** Must be Write/WriteNoResponse/Notify (NOT Read/Notify)
 - ✅ Official app writes to FFE1 to request status, expects notification response
 - ✅ Third-party apps (Moments Print) work perfectly with same protocol implementation
 - ✅ **Status queries during printing:** Apps REQUIRE responses during print (no suppression)
 - ✅ **Ready-to-print state:** Ping byte 7 = 0x01, battery state = 0x02 for all models
 - 🔧 Previous "Printer Busy (1)" error was caused by incorrect FFE1 characteristic configuration
-- All protocol responses verified byte-for-byte against real Mini and Wide printers
+- All protocol responses verified byte-for-byte against real Mini, Square, and Wide printers
 
 ### Image Processing Requirements
 
@@ -1779,13 +1784,25 @@ The ESP32 Instax Bridge simulator has achieved **complete compatibility** with a
 - ✅ **Third-party apps work perfectly** (Moments Print confirmed working)
 - **Test Results:** Full print job received, viewable in web UI
 
-#### ⚠️ Square Link App - CRASHES DURING CONNECTION
-- ❌ **Official app crashes** during or after connection (similar to Mini Link 3 behavior)
-- ✅ Protocol implementation verified correct
+#### ✅ Square Link App - FULLY WORKING (December 27, 2025)
+- ✅ **PRINTING WORKS!** Official INSTAX Square Link app successfully prints to ESP32 simulator
+- ✅ Verified with real Square Link packet capture (FI017, serial prefix 50)
+- ✅ **Critical "ready to print" state values:**
+  - Ping response byte 7 = `0x01` (ready to print)
+  - Battery state byte = `0x02` (ready)
+  - Capability byte = `0x20 | film_count` (e.g., 0x26 for 6 films)
+- ✅ **Additional Info (0x30 0x10) responses:**
+  - Type 0: `c1 a6 00 d2` (Square-specific sensor data)
+  - Type 1: `04 ff 00 01 02` (Square-specific capability flags)
+- ✅ **Status queries: MUST respond during printing** (no suppression)
 - ✅ **Third-party apps work perfectly** (Moments Print, nRF Connect confirmed working)
-- 🔍 Official app likely uses undocumented validation or has stability issues with non-authentic devices
-- **Conclusion:** Protocol implementation is correct; official app has additional requirements or crashes on emulator
-- Ready for print job testing
+- **Test Results:** Full print job received, viewable in web UI
+
+#### ⚠️ ESP32 Simulator Performance Note
+- The ESP32 simulator processes prints **slower than real INSTAX printers**
+- Print progress can be monitored via the ESP32 serial console (`idf.py monitor`)
+- Large images may take 30-60 seconds to fully receive and process
+- The web interface shows the final image once transfer is complete
 
 ---
 
