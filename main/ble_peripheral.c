@@ -599,11 +599,12 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                 response[5] = operation;
                 // Device identification payload (9 bytes)
                 // Real Wide (BO-22 capture): 61 42 00 10 00 00 00 01 00 01 00 00 00 00 00 4a
-                // Real Mini Link 3:          61 42 00 10 00 00 00 02 00 02 00 00 00 00 00 49
-                // Byte 7: Wide=0x01, Mini/Square=0x02
-                // Byte 9: Wide=0x01, Mini/Square=0x02 (mirrors byte 7)
+                // Real Mini during successful print (frame 40753): 61 42 00 10 00 00 00 01 00 02 00 00 00 00 00 49
+                // Earlier Mini sessions used 0x02 at byte 7, but successful print uses 0x01
+                // Byte 7: 0x01 for all models (ready to print state)
+                // Byte 9: Wide=0x01, Mini/Square=0x02
                 response[6] = 0x00;
-                response[7] = (info->model == INSTAX_MODEL_WIDE) ? 0x01 : 0x02;
+                response[7] = 0x01; // Changed: Use 0x01 for all models (matches successful print capture)
                 response[8] = 0x00;
                 response[9] = (info->model == INSTAX_MODEL_WIDE) ? 0x01 : 0x02;
                 response[10] = 0x00;
@@ -770,15 +771,9 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                     send_notification(response, response_len);
                 }
             } else if (operation == INSTAX_OP_SUPPORT_FUNCTION_INFO) {
-                // For Mini/Square: Suppress status queries during active print upload
-                // to prevent BLE bandwidth saturation that causes packet loss.
-                // For Wide: MUST respond to all status queries during printing!
-                // (Real Wide printer responds to every query - verified via packet capture)
-                if (s_print_in_progress && info->model != INSTAX_MODEL_WIDE) {
-                    // Silently ignore - don't send any response (Mini/Square only)
-                    // This prevents the ~50+ notifications that saturate BLE bandwidth
-                    return;
-                }
+                // Always respond to status queries - Mini app requires responses during printing
+                // (Previously suppressed for Mini/Square to prevent BLE bandwidth saturation,
+                // but this caused the Mini app to timeout waiting for responses)
 
                 // Return supported functions info
                 ESP_LOGI(TAG, "Info request: operation=0x%02x, payload_len=%d", operation, payload_len);
@@ -916,9 +911,11 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                                     info->battery_state, info->battery_percentage);
                             response[6] = 0x00; // Payload header byte 0
                             response[7] = 0x01; // Payload header byte 1 (matches query type)
-                            // Byte 8: Wide uses 0x02 (ready), Mini uses 0x03
-                            // CRITICAL: 0x01 may indicate "printer busy" state!
-                            response[8] = (info->model == INSTAX_MODEL_WIDE) ? 0x02 : 0x03;
+                            // Byte 8: Battery/ready state
+                            // Real Mini capture shows 0x02 during successful print sequence
+                            // (earlier captures showed 0x03 during initial connection)
+                            // Wide also uses 0x02. Using 0x02 for all models.
+                            response[8] = 0x02;
                             // Byte 9: All models use battery percentage (0-100)
                             response[9] = info->battery_percentage;
                             ESP_LOGI(TAG, "  Battery response: byte8=0x%02x (ready), byte9=0x%02x (%d%%)",
@@ -958,11 +955,14 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
 
                             if (info->model == INSTAX_MODEL_WIDE) {
                                 // Wide Link base flags: 0010 0000 (0x20) - VERIFIED with real BO-22 capture
-                                // Real Wide capture shows 0x24 = 0x20 + 0x04 (4 films)
+                                // Real Wide capture shows constant 0x24 regardless of film count
                                 capability = 0x20 | (film_count & 0x0F);
                             } else if (info->model == INSTAX_MODEL_MINI) {
-                                // Mini Link 3 base flags: 0011 0000 (0x30) - needs verification
-                                capability = 0x30 | (film_count & 0x0F);
+                                // Mini Link 2 (FI033): Uses 0x20 base + film count in lower nibble
+                                // The Mini app reads film count from capability byte lower nibble
+                                // Real Mini shows 0x24 (with 4 film) or 0x2b (with 11 film) etc.
+                                // Note: ping byte 7 must be 0x01 and battery state 0x02 for printing
+                                capability = 0x20 | (film_count & 0x0F);
                             } else if (info->model == INSTAX_MODEL_SQUARE) {
                                 // Square Link base flags: 0010 0000 (0x20) - VERIFIED with real FI017
                                 capability = 0x20 | (film_count & 0x0F);
@@ -1547,16 +1547,17 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
 
                     if (query_type == 0x00) {
                         // 17-byte response with sensor data
-                        // Real device: 61 42 00 11 30 10 00 00 c3 80 00 be 00 00 00 00 0a
+                        // Real Mini during successful print: 61 42 00 11 30 10 00 00 be 19 00 fc 00 00 00 00 XX
+                        // (earlier connection used different values: c3 80 00 be...)
                         response_len = 17;
                         response[2] = 0x00; // Length high byte
                         response[3] = 0x11; // Length low byte (17)
                         response[6] = 0x00; // Payload header 1
                         response[7] = 0x00; // Payload header 2 (matches query type)
-                        response[8] = 0xc3; // Sensor data from real device
-                        response[9] = 0x80;
+                        response[8] = 0xbe; // Updated to match successful print capture
+                        response[9] = 0x19;
                         response[10] = 0x00;
-                        response[11] = 0xbe;
+                        response[11] = 0xfc;
                         response[12] = 0x00;
                         response[13] = 0x00;
                         response[14] = 0x00;
@@ -1587,12 +1588,14 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                             response[14] = 0x01; // Wide: 0x01
                             response[15] = 0x00; // Wide: 0x00
                         } else {
-                            // Mini/Square sensor data
-                            response[11] = 0x02;
-                            response[12] = 0xff;
+                            // Mini/Square sensor data - using values from successful print session
+                            // Real Mini before print: 00 00 00 2a 01 00 01 01 00 00 00 00
+                            // (earlier session had different values: 02 ff 00 01 02)
+                            response[11] = 0x2a; // Changed from 0x02 - matches successful print capture
+                            response[12] = 0x01; // Changed from 0xff
                             response[13] = 0x00;
                             response[14] = 0x01;
-                            response[15] = 0x02;
+                            response[15] = 0x01; // Changed from 0x02
                         }
                         response[16] = 0x00;
                         response[17] = 0x00;
