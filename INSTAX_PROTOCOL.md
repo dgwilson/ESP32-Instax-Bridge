@@ -4,7 +4,7 @@ This document describes the protocols used to communicate with Fujifilm Instax p
 
 **Primary Implementation Based on:** [javl/InstaxBLE](https://github.com/javl/InstaxBLE) - Bluetooth protocol for Link printers
 **Additional Reference:** [jpwsutton/instax_api](https://github.com/jpwsutton/instax_api) - WiFi protocol for SP-2/SP-3 printers
-**Last Updated:** December 27, 2025 (Wide "Printer Busy" fix - model code BO-22, battery byte 8 = 0x02)
+**Last Updated:** December 27, 2025 (Wide Link Official App Printing - COMPLETE SUCCESS! Print START ACK fix, status query fix)
 
 ---
 
@@ -647,10 +647,29 @@ Higher file size limits remain unvalidated.
 - Device Information Service (DIS)
 
 **Implementation Note (Updated December 27, 2025):** Real iPhone packet capture of successful Wide print shows:
-- Print START ACK returns max buffer size: `0x0384B9` = 230,585 bytes (~225 KB)
-- Real print job used 193,733 bytes (~189 KB) successfully
-- Official app sends ~200 KB images without issue
+- Print START ACK is **12 bytes**: `61 42 00 0C 10 00 00 00 00 03 84 B9`
+- **CRITICAL:** `03 84` is the **chunk size** (900 bytes), NOT max file size!
+- `B9` is the **checksum**, NOT part of a 3-byte size field!
+- Real print jobs successfully transfer ~200 KB images
+- Official app tested with 200,208 byte image - complete success
+
 Wide requires the longest packet delay (150ms) despite using the same 900-byte packet size as Mini, likely due to the larger overall image size requiring more processing time.
+
+**Print START ACK Format (Wide Link - Verified December 2025):**
+```
+Byte:   0  1  2  3  4  5  6  7  8  9 10 11
+Hex:   61 42 00 0C 10 00 00 00 00 03 84 B9
+       └──┘ └──┘ └──┘ └──────┘ └──┘ └──┘
+       Hdr  Len  F Op  Status  Chunk Chk
+                       +Pad    Size
+```
+- **Length (0x000C = 12):** Total packet length
+- **Function (0x10):** PRINT
+- **Operation (0x00):** START (response)
+- **Status (0x00):** Success
+- **Padding (0x00 0x00):** Two zero bytes
+- **Chunk Size (0x0384 = 900):** Bytes per DATA packet
+- **Checksum (0xB9):** (255 - sum of bytes 0-10) & 0xFF
 
 **Wide-Specific BLE Profile:** Unlike Mini Link 3 (which uses service `0000D0FF`), Wide Link uses service `0000E0FF` with only 3 characteristics (FFE1, FFE9, FFEA). Wide does NOT advertise the Link 3 Status Service. See [Wide-Specific Service](#wide-specific-service) section for complete characteristic details.
 
@@ -1731,18 +1750,19 @@ The ESP32 Instax Bridge simulator has achieved **complete compatibility** with a
 - All protocol queries work (battery, film count, print history)
 - Ready for print job testing
 
-#### ⚠️ Wide Link App - PROTOCOL VERIFIED, TESTING FFE1 FIX (December 2025)
+#### ✅ Wide Link App - FULLY WORKING (December 27, 2025)
+- ✅ **PRINTING WORKS!** Official app successfully prints to ESP32 simulator
 - ✅ All protocol responses verified byte-for-byte against real Wide printer
-- ✅ Battery info byte 8 = `0x01` (Wide-specific, vs `0x03` for Mini)
-- ✅ **Film count encoding same as Square:** Capability byte lower nibble (VERIFIED Dec 2025)
+- ✅ Battery info byte 8 = `0x02` (READY), `0x01` = BUSY
+- ✅ **Film count encoding same as Square:** Capability byte lower nibble (VERIFIED)
 - ✅ Dimensions response = 19 bytes for Wide (vs 23 bytes for Mini/Square)
 - ✅ Ping response byte 9 = `0x01` for Wide (vs `0x02` for Mini/Square)
 - ✅ Additional Info type 0x01 = Wide-specific bytes at positions 11-15
 - ✅ **Third-party apps work perfectly** (Moments Print confirmed working)
-- ✅ **FFE1 characteristic fixed: Write/WriteNoResponse/Notify (NOT Read/Notify)**
-- 🔧 **Official INSTAX Wide app previously showed "Printer Busy (1)"** - FFE1 fix applied
-- 🔍 Official app accesses Wide E0FF service (FFE1 write → notification response pattern)
-- **Status:** Testing FFE1 characteristic fix with official app
+- ✅ **FFE1 characteristic: Write/WriteNoResponse/Notify (NOT Read/Notify)**
+- ✅ **Print START ACK: 12 bytes, sent as NOTIFICATION (not indication)**
+- ✅ **Status queries: Respond during printing (Wide does NOT suppress queries)**
+- **Test Results:** 200,208 byte image, 224 DATA packets, 0 failures, viewable in web UI
 
 #### ⚠️ Square Link App - CRASHES DURING CONNECTION
 - ❌ **Official app crashes** during or after connection (similar to Mini Link 3 behavior)
@@ -3143,6 +3163,54 @@ Time to execute: ~3-10 seconds depending on image size and BLE speed
 ---
 
 ## Changelog
+
+### December 27, 2025 (Wide Link Official App Printing - COMPLETE SUCCESS!)
+
+**BREAKTHROUGH: Official INSTAX Wide app now successfully prints to ESP32 simulator!**
+
+Three critical fixes were required to enable printing with the official Fujifilm INSTAX Wide app:
+
+1. **Print START ACK must be sent as NOTIFICATION (not Indication)**
+   - Real Wide printer sends ALL Instax protocol responses (`61 42...`) as **NOTIFICATIONS** on handle 0x002a
+   - Indications (opcode 0x1d) on handle 0x0008 are a separate service (Service Changed: `0a00ffff`)
+   - Previous code incorrectly used BLE indications for Wide Print START ACK
+
+2. **Print START ACK packet is 12 bytes (not 13)**
+   - Previous code sent 13 bytes with checksum byte duplicated
+   - Real Wide printer response: `61 42 00 0C 10 00 00 00 00 03 84 B9` (12 bytes)
+   - Breakdown:
+     - `61 42` = Header (from device)
+     - `00 0C` = Length (12 = total packet)
+     - `10 00` = Function/Operation (PRINT START response)
+     - `00 00 00` = Status OK + padding
+     - `03 84` = Chunk size (0x0384 = 900 bytes) - **2 bytes, NOT 3!**
+     - `B9` = Checksum
+   - Previous code incorrectly treated `B9` as part of a 3-byte "max size" field and added another checksum
+
+3. **Wide printer responds to ALL status queries during printing**
+   - Previous code suppressed status query responses during print upload (to prevent bandwidth saturation)
+   - Real Wide printer responds to every status query during printing (verified via packet capture)
+   - Suppression must be model-specific: only apply to Mini/Square, NOT Wide
+
+**Verification via packet capture analysis:**
+- Analyzed `Real_iPhone_to_Wide_print_b.pklg` using tshark
+- Confirmed all protocol responses use ATT opcode 0x1b (Notification) on handle 0x002a
+- Confirmed status query responses continue during DATA transfer phase
+- Print START ACK immediately followed by DATA packets after app receives ACK
+
+**Test Results:**
+- ✅ Official INSTAX Wide app connects and shows printer ready
+- ✅ Print job initiates successfully (Print START ACK accepted)
+- ✅ All 224 DATA packets received (200,700 bytes)
+- ✅ 0 retries, 0 failures during upload
+- ✅ Print END and EXECUTE commands processed
+- ✅ Image saved successfully to SPIFFS
+- ✅ Image viewable via web interface
+
+**Code Changes:**
+- `ble_peripheral.c`: Print START ACK now 12 bytes, sent as notification
+- `ble_peripheral.c`: Status query suppression bypassed for Wide model
+- Comments updated with correct packet format documentation
 
 ### December 27, 2024 (Wide Link "Printer Busy" Fix - BREAKTHROUGH!)
 

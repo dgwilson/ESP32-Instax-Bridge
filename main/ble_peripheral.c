@@ -770,10 +770,12 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                     send_notification(response, response_len);
                 }
             } else if (operation == INSTAX_OP_SUPPORT_FUNCTION_INFO) {
-                // CRITICAL: Suppress ALL status queries during active print upload
-                // to prevent BLE bandwidth saturation that causes packet loss
-                if (s_print_in_progress) {
-                    // Silently ignore - don't send any response
+                // For Mini/Square: Suppress status queries during active print upload
+                // to prevent BLE bandwidth saturation that causes packet loss.
+                // For Wide: MUST respond to all status queries during printing!
+                // (Real Wide printer responds to every query - verified via packet capture)
+                if (s_print_in_progress && info->model != INSTAX_MODEL_WIDE) {
+                    // Silently ignore - don't send any response (Mini/Square only)
                     // This prevents the ~50+ notifications that saturate BLE bandwidth
                     return;
                 }
@@ -1210,52 +1212,46 @@ static void handle_instax_packet(const uint8_t *data, size_t len) {
                         }
 
                         // Send response (ACK if successful, error if failed)
-                        // Real Wide printer (successful print capture):
-                        //   61 42 00 0C 10 00 00 00 00 03 84 B9 00
-                        //   13 bytes total: 12 data bytes + 1 checksum byte
-                        //   Length field = 0x0C (12) = data bytes only (checksum not counted)
-                        //   Payload: Status(1) + Padding(2) + MaxSize(3) = 6 bytes
-                        //   0x0384B9 = 230,585 bytes max buffer size
+                        // Real Wide printer Print START ACK (from packet capture):
+                        //   61 42 00 0C 10 00 00 00 00 03 84 B9
+                        //   12 bytes total: header(2) + length(2) + func(1) + op(1) + payload(5) + checksum(1)
+                        //   Payload: Status(1) + Padding(2) + ChunkSize(2) = 5 bytes
+                        //   0x0384 = 900 bytes (Wide chunk size)
+                        //   B9 = checksum (NOT part of chunk size!)
                         response[0] = INSTAX_HEADER_FROM_DEVICE_0;
                         response[1] = INSTAX_HEADER_FROM_DEVICE_1;
-                        // Length field = 12 (excludes checksum byte)
                         response[2] = 0x00; // Length high byte
-                        response[3] = 0x0C; // Length low byte (12 data bytes)
+                        response[3] = 0x0C; // Length low byte (12 = total packet length)
                         response[4] = function;
                         response[5] = operation;
 
                         if (print_start_ok) {
                             response[6] = 0x00;  // Status: OK
-                            response[7] = 0x00;  // Padding byte 1 (matches real Wide)
-                            response[8] = 0x00;  // Padding byte 2 (matches real Wide)
-                            // Max buffer size: 0x0384B9 = 230,585 bytes (matches real Wide capture)
-                            response[9] = 0x03;  // Max size high byte
-                            response[10] = 0x84; // Max size mid byte
-                            response[11] = 0xB9; // Max size low byte (230,585 bytes = ~225KB)
-                            ESP_LOGI(TAG, "🚀 Sending print start ACK (13 bytes, timestamp: %lu ms)", (unsigned long)esp_log_timestamp());
+                            response[7] = 0x00;  // Padding byte 1
+                            response[8] = 0x00;  // Padding byte 2
+                            // Chunk size: 0x0384 = 900 bytes (Wide chunk size, 2 bytes)
+                            response[9] = 0x03;  // Chunk size high byte
+                            response[10] = 0x84; // Chunk size low byte (900 bytes)
+                            ESP_LOGI(TAG, "🚀 Sending print start ACK (12 bytes, timestamp: %lu ms)", (unsigned long)esp_log_timestamp());
                         } else {
                             response[6] = 0xB1; // Status: Error 177 (out of memory)
                             response[7] = 0x00;
                             response[8] = 0x00;
                             response[9] = 0x00;
                             response[10] = 0x00;
-                            response[11] = 0x00;
                             ESP_LOGE(TAG, "❌ Sending print start ERROR (out of memory)");
                         }
 
-                        // Checksum is calculated over 12 data bytes (0-11), then appended as byte 12
-                        // Total packet sent = 13 bytes (matching real Wide printer)
-                        response[12] = instax_calculate_checksum(response, 12);
-                        response_len = 13; // Send all 13 bytes
+                        // Checksum is calculated over bytes 0-10 (11 bytes), appended as byte 11
+                        // Total packet = 12 bytes (matching real Wide printer exactly)
+                        response[11] = instax_calculate_checksum(response, 11);
+                        response_len = 12;
 
-                        // Wide app subscribes to INDICATIONS on write char - try sending ACK as indication
-                        const instax_printer_info_t *model_info = printer_emulator_get_info();
-                        if (model_info->model == INSTAX_MODEL_WIDE && s_indicate_handle != 0) {
-                            ESP_LOGI(TAG, "🎯 Wide model: Sending print START ACK as INDICATION");
-                            send_indication(response, response_len);
-                        } else {
-                            send_notification(response, response_len);
-                        }
+                        // Send Print START ACK as notification on s_notify_handle
+                        // Real Wide printer sends ALL Instax protocol responses (61 42...) as NOTIFICATIONS
+                        // on handle 0x002a (verified via packet capture Dec 2025)
+                        // Indications (0x1d) on handle 0x0008 are a separate device service (0a00ffff)
+                        send_notification(response, response_len);
 
                         if (print_start_ok) {
                             ESP_LOGI(TAG, "✅ Print start ACK sent (timestamp: %lu ms)", (unsigned long)esp_log_timestamp());

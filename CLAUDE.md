@@ -701,9 +701,11 @@ This is appropriate for development/testing but consider security hardening for 
 
 ## Official INSTAX App Compatibility (December 2025)
 
-### Current Status: PROTOCOL VERIFIED ✅ (App Compatibility Partial ⚠️)
+### Current Status: WIDE FULLY WORKING ✅ | MINI/SQUARE PARTIAL ⚠️
 
-**December 5, 2025 BREAKTHROUGH:** Missing Device Information Service characteristics were the blocker! Official app now accepts simulator and initiates print jobs.
+**December 27, 2025 BREAKTHROUGH:** Official INSTAX Wide app now **successfully prints** to the simulator! Full image transfer (200+ KB), complete print execution, images viewable in web UI.
+
+**December 5, 2025:** Missing Device Information Service characteristics were identified as the initial blocker.
 
 ### Root Cause Discovery: Missing Device Information Service
 
@@ -930,16 +932,17 @@ The ESP32 INSTAX printer simulator has **100% correct and complete protocol impl
 
 The simulator successfully emulates a physical INSTAX printer. The official app crash is an internal iOS application issue unrelated to the Bluetooth protocol implementation.
 
-### Current Testing Status (December 6, 2025)
+### Current Testing Status (December 27, 2025)
 
-**INSTAX Square:** ✅ Protocol validated and complete
-**INSTAX Mini:** Ready for testing
-**INSTAX Wide:** Ready for testing
+**INSTAX Wide:** ✅ **FULLY WORKING** - Official app prints successfully to simulator!
+**INSTAX Square:** ✅ Protocol validated (official app crashes during print)
+**INSTAX Mini:** ✅ Protocol validated (official app crashes during print)
 
-**Recent Improvements:**
-- Added print job start/completion banners for easy log identification
-- Enhanced subscribe/unsubscribe debug logging
-- Device name customization verified (pattern doesn't affect compatibility)
+**Recent Breakthroughs (December 27, 2025):**
+- ✅ Wide Link official app prints complete 200+ KB images
+- ✅ Print START ACK format corrected (12 bytes, notification, chunk size field)
+- ✅ Status query suppression fixed (Wide requires responses during printing)
+- ✅ Images viewable in web interface after successful print
 
 ---
 
@@ -1055,24 +1058,27 @@ This dual-encoding approach maintains backward compatibility with all INSTAX app
 
 ---
 
-## Wide Link "Printer Busy (1)" Error Investigation (December 2025 - RESOLVED ✅)
+## Wide Link Official App - COMPLETE SUCCESS! ✅ (December 27, 2025)
 
-### Problem Description
+### BREAKTHROUGH: Full Printing Works!
 
-Official INSTAX Wide app shows "The device is busy. Please try again (1)" error when attempting to print, despite:
-- ✅ Connection succeeding
-- ✅ Battery info displaying correctly
-- ✅ Film count displaying correctly
-- ✅ Moments Print working perfectly with the same simulator
-- ✅ All handshake queries completing successfully
+**Official INSTAX Wide app now successfully prints to the ESP32 simulator!**
 
-### Current Status: RESOLVED ✅ (New Issue: App Crash During Print)
+After extensive analysis of real Wide printer Bluetooth captures, all protocol issues have been resolved. The official Fujifilm INSTAX Wide app can now:
+- ✅ Connect to the simulator
+- ✅ Query battery and film status
+- ✅ Initiate print jobs
+- ✅ Transfer complete image data (200+ KB)
+- ✅ Complete print execution
+- ✅ Images are saved and viewable via web interface
 
-**Last Updated:** December 27, 2025
+### Test Results (December 27, 2025)
+- **Image Size:** 200,208 bytes
+- **DATA Packets:** 224 chunks received
+- **ACK Stats:** 0 retries, 0 failures
+- **Final Image:** Saved to SPIFFS, viewable in web UI
 
-**BREAKTHROUGH:** Real iPhone packet capture of Wide printer print revealed the root cause!
-
-The "Printer Busy (1)" error is now **FIXED**. The official INSTAX Wide app now proceeds to print. However, like the Mini and Square apps, it crashes during the print sequence (before image data transfer begins).
+### Previous Issue: "Printer Busy (1)" - RESOLVED ✅
 
 ### Root Cause Discovery (December 27, 2025)
 
@@ -1137,46 +1143,81 @@ Old ESP32 (8 films): 0x38 = 0x30 + 0x08
 | Capability base | 0x20 | 0x20 | ✅ |
 | Dimensions | 19 bytes | 19 bytes | ✅ |
 
-### Result: "Printer Busy" FIXED ✅
+### Result: Full Printing Works! ✅
 
-After applying these fixes, the official INSTAX Wide app:
+After applying all fixes, the official INSTAX Wide app **successfully completes full print jobs**:
 - ✅ No longer shows "Printer Busy (1)" error
 - ✅ Proceeds to print when print button is tapped
-- ⚠️ **Crashes during print sequence** (same as Mini and Square apps)
+- ✅ **Transfers complete image data** (200+ KB tested)
+- ✅ **Print completes successfully**
+- ✅ **Image saved and viewable in web interface**
 
-### Print Crash Fix: Print START ACK Format (December 27, 2025)
+### Final Breakthrough: Three Critical Fixes (December 27, 2025)
 
-All three official INSTAX apps were crashing ~120-220ms after receiving the print START ACK. Analysis of real Wide printer Bluetooth capture revealed the root cause:
+Analysis of `Real_iPhone_to_Wide_print_b.pklg` with tshark revealed the remaining issues:
 
-**The print START ACK was wrong format:**
+#### Fix 1: Print START ACK Must Be NOTIFICATION (not Indication)
+
+Real Wide printer sends ALL protocol responses (`61 42...`) as **BLE Notifications** (ATT opcode 0x1b) on handle 0x002a. The previous code was incorrectly using BLE Indications for Wide Print START ACK.
+
+```
+Real Wide:  ATT opcode 0x1b (Notification) on handle 0x002a
+Old ESP32:  ATT opcode 0x1d (Indication) on handle 8 ❌
+```
+
+**Fix:** Changed to use `send_notification()` for all models.
+
+#### Fix 2: Print START ACK is 12 Bytes (not 13)
+
+The previous code was sending 13 bytes with checksum duplicated:
 
 | Version | Response | Size |
 |---------|----------|------|
-| **Old (Wrong)** | `61 42 00 08 10 00 00 44` | 8 bytes |
-| **Real Wide** | `61 42 00 0C 10 00 00 00 00 03 84 B9 00` | 12 bytes |
+| **Old (Wrong)** | `61 42 00 0C 10 00 00 00 00 03 84 B9 XX` | 13 bytes ❌ |
+| **Real Wide** | `61 42 00 0C 10 00 00 00 00 03 84 B9` | 12 bytes ✅ |
 
-**The extra bytes matter:**
-- Bytes 7-8: `00 00` - Padding
-- Bytes 9-11: `03 84 B9` - Max buffer size (230,585 bytes = ~225KB)
+**Critical Insight:** `03 84` is the **chunk size** (900 bytes), NOT part of a 3-byte "max file size". `B9` is the **checksum**, NOT data!
 
-The app was expecting a 12-byte response with buffer size confirmation. Our 8-byte minimal ACK was malformed.
+```
+Byte:   0  1  2  3  4  5  6  7  8  9 10 11
+Hex:   61 42 00 0C 10 00 00 00 00 03 84 B9
+       └──┘ └──┘ └──┘ └──────┘ └──┘ └──┘
+       Hdr  Len  F Op  Status  Chunk Chk
+                       +Pad    Size
+```
 
-**Fix applied:** `ble_peripheral.c` now sends 12-byte print START ACK matching real Wide printer format.
+**Fix:** Changed packet to 12 bytes with correct checksum placement.
+
+#### Fix 3: Wide Must Respond to Status Queries During Printing
+
+Previous code suppressed all status query responses during print upload (to prevent bandwidth saturation). But real Wide printer responds to **every** status query during printing!
+
+```
+Frame 37827 (after Print START ACK):
+  Status query: 41 62 00 08 00 02 02 50
+  Response:     61 42 00 11 00 02 00 02 28 00 00 0D 00 00 00 00 16 ✅
+```
+
+**Fix:** Status query suppression now only applies to Mini/Square, not Wide.
 
 ### Packet Captures Available
 
 | File | Content | Status |
 |------|---------|--------|
 | `Real_iPhone_to_Wide_print_a.pklg` | Real Wide printer print (larger) | ✅ Used for analysis |
-| `Real_iPhone_to_Wide_print_b.pklg` | Real Wide printer print (latest) | ✅ Used for analysis |
+| `Real_iPhone_to_Wide_print_b.pklg` | Real Wide printer print (latest) | ✅ **Key capture for final fixes** |
 | `Sim_iPhone_to_Wide_printcrash_a.pklg` | Simulator crash capture | ✅ Used for diagnosis |
 | `Sim_iPhone_to_Wide_printcrash_b.pklg` | Simulator crash capture (latest) | ✅ Used for diagnosis |
 | `decoded_mini_link3.txt` | Mini Link 3 reference | ✅ Reference |
 
-### Files Modified
+### Files Modified (All Fixes)
 
+**"Printer Busy" fixes:**
 - `printer_emulator.c:219-220` - Changed model code to "BO-22"
 - `ble_peripheral.c:553-561` - Fixed ping response bytes 7 and 9
 - `ble_peripheral.c:868-879` - Fixed battery response byte 8 to 0x02
 - `ble_peripheral.c:914-917` - Fixed capability byte base to 0x20
-- `ble_peripheral.c:1162-1195` - **Fixed print START ACK format (8→12 bytes)**
+
+**Print completion fixes (December 27, 2025):**
+- `ble_peripheral.c:1212-1246` - **Fixed Print START ACK: 12 bytes, notification, correct format**
+- `ble_peripheral.c:772-780` - **Wide responds to status queries during printing**
