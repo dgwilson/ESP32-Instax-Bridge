@@ -2,11 +2,11 @@
 
 ESP32 firmware that **emulates** a Fujifilm Instax Link printer over Bluetooth LE. Acts as a virtual Instax printer that your photo apps can connect to, capturing and storing the print jobs sent to it.
 
-> **Development:** This project was developed with assistance from **Anthropic Claude** (primarily Sonnet 4.5), leveraging AI-assisted protocol analysis and firmware implementation.
+> **Development:** This project was developed with assistance from **Anthropic Claude** (Sonnet 4.5 / Opus 4.5), leveraging AI-assisted protocol analysis and firmware implementation.
 
 ## What This Does
 
-Your ESP32 **pretends to be** an Instax printer (Mini/Wide/Square). When your app (or any Instax-compatible app) tries to print a photo, it connects to the ESP32 instead of a real printer. The printer simulator was developed as a development aid to prove the print abilities of an application without wasting film continuously. Please see the section below on **current status** as it is important to understand what does not work as this this informs where more discovery and coding is required. The knowledge and protocol understanding here then aids in the development of other software.
+Your ESP32 **pretends to be** an Instax printer (Mini/Wide/Square). When your app (or any Instax-compatible app) tries to print a photo, it connects to the ESP32 instead of a real printer. The printer simulator was developed as a development aid to prove the print abilities of an application without wasting film continuously. **All three official Fujifilm INSTAX apps (Mini, Square, Wide) now print successfully to this simulator**, demonstrating complete protocol compatibility.
 
 The ESP32:
 1. Advertises as "Instax-Mini Link" (or Wide/Square) over Bluetooth LE
@@ -77,30 +77,24 @@ Additional documentation:
 
 ## Official App Compatibility Status
 
-**Goal:** Connecting with official Fujifilm INSTAX apps is a stretch goal - a measure of protocol accuracy, though not required for primary use cases.
+### ✅ All Three Official INSTAX Apps Now Print Successfully!
 
-### Current Status:
+After extensive protocol reverse-engineering and iterative refinement, the ESP32 simulator achieves **full compatibility** with all official Fujifilm INSTAX apps:
 
 | Official App | Compatibility | Notes |
 |--------------|---------------|-------|
-| **INSTAX Square** | ❌ **Crashes** | App crashes during/after connection (protocol verified correct) |
-| **INSTAX Mini Link** | ❌ **Crashes** | App crashes during/after connection in Link 3 mode |
-| **INSTAX Wide** | ❌ **Printer Busy Error** | Shows "Printer Busy (1)" despite correct protocol responses |
+| **INSTAX Mini Link** | ✅ **Working** | Full print support, connects and prints successfully |
+| **INSTAX Square Link** | ✅ **Working** | Full print support, connects and prints successfully |
+| **INSTAX Wide Link** | ✅ **Working** | Full print support, connects and prints successfully |
 
-### Why Official Apps Fail:
+This represents a significant milestone - the protocol implementation is now accurate enough that official Fujifilm apps cannot distinguish the ESP32 simulator from a real INSTAX printer.
 
-The official INSTAX apps crash or show errors despite **100% correct protocol implementation** (verified byte-for-byte against real printers). Possible causes:
-
-1. **MAC Address OUI Filtering** - Apps may require Fujifilm-registered MAC address prefix (`1C:7D:22`)
-2. **Advertising Data Validation** - Apps may check manufacturer data or TX power in BLE advertising
-3. **Undocumented Protocol Extensions** - Apps may use features not present in third-party protocol documentation
-4. **Device Authentication** - Apps may perform cryptographic validation or certificate checks
-5. **App Stability Issues** - Apps may have bugs when connecting to non-authentic hardware
-
-**Alternative Apps (Full Compatibility):**
-- ✅ Moments Print (custom app) - Works perfectly with all models
-- ✅ nRF Connect - Full BLE characteristic access for testing
-- ✅ Any third-party apps that don't filter by MAC address
+**All Compatible Apps:**
+- ✅ **INSTAX Mini Link** (official) - Full print support
+- ✅ **INSTAX Square Link** (official) - Full print support
+- ✅ **INSTAX Wide Link** (official) - Full print support
+- ✅ **Moments Print** (custom app) - Works perfectly with all models
+- ✅ **nRF Connect** - Full BLE characteristic access for testing
 
 ### Bluetooth MAC Address Configuration
 
@@ -239,7 +233,8 @@ Available commands:
 
 ```
 printer_status                     # View current printer state
-printer_model mini|wide|square     # Set printer model type
+model mini|wide|square             # Set printer model (short form)
+printer_model mini|wide|square     # Set printer model (long form)
 printer_battery 85                 # Set battery to 85%
 printer_prints 10                  # Set 10 prints remaining
 
@@ -255,11 +250,23 @@ help                               # Show all commands
 reboot                             # Restart ESP32
 ```
 
+### BLE Advertising Names
+
+When the ESP32 advertises, it uses model-specific device names that match real INSTAX printers:
+
+| Model | BLE Device Name | Notes |
+|-------|-----------------|-------|
+| **Mini** | `INSTAX-70555555(BLE)` | 8-digit ID with (BLE) suffix |
+| **Square** | `INSTAX-50555555(IOS)` | 8-digit ID with (IOS) suffix |
+| **Wide** | `INSTAX-205555` | 6-digit ID, no suffix |
+
+These names appear in your phone's Bluetooth scanner and in the official INSTAX apps. The naming format matches real printers so apps recognize the simulator as a genuine device.
+
 ### 4. Connect from Your App
 
 1. Run `ble_start` in the console
-2. Open your Moments app or Instax-compatible photo app
-3. Scan for printers - you'll see "Instax-Mini Link" (or Wide/Square)
+2. Open the official INSTAX app or any Instax-compatible photo app
+3. Scan for printers - you'll see the device name (e.g., `INSTAX-70555555(BLE)` for Mini)
 4. Connect and send a print job
 5. Watch the ESP32 console for progress
 6. Image is saved to `/spiffs/print_<timestamp>.jpg`
@@ -388,7 +395,7 @@ This project implements the complete Instax BLE protocol based on:
 - Mini Link 1/2: 105 KB
 - Mini Link 3: 55 KB (firmware-limited)
 - Square: 105 KB (conservative, protocol reports 400 KB)
-- Wide: 105 KB (conservative, protocol reports 330 KB)
+- Wide: ~225 KB (verified from protocol, 200+ KB prints tested successfully)
 
 See [INSTAX_PROTOCOL.md](INSTAX_PROTOCOL.md) for detailed model specifications and protocol differences.
 
@@ -564,7 +571,7 @@ This project is part of the Moments Print suite. Based on reverse-engineered Ins
 
 ## Credits
 
-- **AI Development:** Developed with [Anthropic Claude](https://www.anthropic.com/) (Sonnet 4.5)
+- **AI Development:** Developed with [Anthropic Claude](https://www.anthropic.com/) (Sonnet 4.5 / Opus 4.5)
 - Instax protocol research: [javl/InstaxBLE](https://github.com/javl/InstaxBLE)
 - Python implementation reference: [jpwsutton/instax_api](https://github.com/jpwsutton/instax_api)
 - ESP-IDF framework: [Espressif](https://github.com/espressif/esp-idf)
@@ -576,12 +583,152 @@ This project is part of the Moments Print suite. Based on reverse-engineered Ins
 
 **Built with:** ESP-IDF v6.1 on macOS
 **Hardware:** ESP32-WROOM-32 (4MB flash)
-**Development:** Anthropic Claude (Sonnet 4.5)
+**Development:** Anthropic Claude (Sonnet 4.5 / Opus 4.5)
 
 **Implementation Status:**
-- ✅ **Mini Link 1/2:** Full protocol support (protocol verified correct)
+- ✅ **Mini Link 1/2:** Full protocol support, prints work perfectly
 - ✅ **Mini Link 3:** Complete including Link 3-specific services (`0000D0FF`, `00006287`)
-- ✅ **Square Link:** Full protocol support (protocol verified correct)
+- ✅ **Square Link:** Full protocol support, prints work perfectly
 - ✅ **Wide Link:** Complete including Wide-specific service (`0000E0FF`)
-- ❌ **Official Apps:** All official apps crash or show errors (Mini/Square crash, Wide shows "Printer Busy")
+- ✅ **Official Apps:** All three official INSTAX apps (Mini, Square, Wide) connect and print successfully!
 - ✅ **Third-Party Apps:** Full compatibility (Moments Print, nRF Connect work perfectly on all models)
+
+---
+
+## Help - I Want to Write My Own Printing Application
+
+This section provides guidance for developers who want to build their own application that prints to INSTAX printers.
+
+### Essential Documentation
+
+1. **[INSTAX_PROTOCOL.md](INSTAX_PROTOCOL.md)** - Complete protocol specification including:
+   - BLE service and characteristic UUIDs
+   - Packet structure and checksums
+   - Connection handshake sequence (10 stages)
+   - Print job flow (START → DATA → END → EXECUTE)
+   - Model-specific parameters and quirks
+
+2. **Reference Implementations:**
+   - [javl/InstaxBLE](https://github.com/javl/InstaxBLE) - Python implementation (great for understanding the protocol)
+   - [jpwsutton/instax_api](https://github.com/jpwsutton/instax_api) - Another Python reference
+   - This ESP32 firmware - C implementation in `main/ble_peripheral.c` and `main/instax_protocol.c`
+
+### Key Concepts
+
+**1. Bluetooth LE Connection**
+```
+Service UUID: 70954782-2d83-473d-9e5f-81e1d02d5273
+Write Characteristic: 70954783-2d83-473d-9e5f-81e1d02d5273  (send commands here)
+Notify Characteristic: 70954784-2d83-473d-9e5f-81e1d02d5273 (receive responses here)
+```
+
+**2. Packet Structure**
+Every packet follows this format:
+```
+[Header: 41 62] [Length: 2 bytes] [Function: 1 byte] [Operation: 1 byte] [Payload: N bytes] [Checksum: 1 byte]
+```
+- Header is always `0x41 0x62` ("Ab")
+- Length is little-endian, includes function + operation + payload + checksum
+- Checksum is XOR of all bytes from function through end of payload
+
+**3. Connection Handshake**
+Before printing, you must complete the connection sequence:
+1. Subscribe to notify characteristic
+2. Query device info (function 0x00, various operations)
+3. Query battery, film count, dimensions
+4. Printer responds with capabilities
+
+**4. Print Job Flow**
+```
+1. PRINT_START (0x10, 0x00)  → Send image size, receive ACK
+2. PRINT_DATA  (0x10, 0x01)  → Send image chunks, wait for ACK after each
+3. PRINT_END   (0x10, 0x02)  → Signal upload complete, receive ACK
+4. PRINT_EXEC  (0x10, 0x80)  → Trigger actual printing
+```
+
+**5. ACK-Based Flow Control (Recommended)**
+
+The printer sends an acknowledgement after each DATA packet. Wait for this ACK before sending the next packet - this automatically adapts to any printer speed and eliminates timing issues:
+```
+App: Send DATA packet 1
+Printer: ACK (0x10, 0x01 response)
+App: Send DATA packet 2
+Printer: ACK
+... repeat until all chunks sent ...
+```
+
+This is more reliable than fixed timing delays and works with both physical printers and the ESP32 simulator.
+
+**6. Image Preparation**
+- Convert image to JPEG at printer's native resolution
+- Mini: 600×800px, Square: 800×800px, Wide: 1260×840px
+- Compress to fit within file size limits (see below)
+- Link 3 only: Flip image vertically before sending
+
+### Model-Specific Requirements
+
+| Model | Resolution | Chunk Size | Max File Size | Special Notes |
+|-------|-----------|------------|---------------|---------------|
+| Mini Link 1/2 | 600×800 | 900 bytes | 105 KB | Standard protocol |
+| Mini Link 3 | 600×800 | 900 bytes | 55 KB | Vertical flip required |
+| Square Link | 800×800 | 1808 bytes | 105 KB | 1-second delay before EXECUTE |
+| Wide Link | 1260×840 | 900 bytes | ~225 KB | Uses additional service `0000E0FF` |
+
+**Flow Control:** Use ACK-based flow control (wait for printer acknowledgement after each DATA packet) rather than fixed timing delays. This automatically adapts to printer speed and works reliably across all models.
+
+### Development Workflow
+
+**Step 1: Use This Simulator**
+
+Don't waste film during development! Use the ESP32 simulator:
+1. Flash this firmware to an ESP32
+2. Run `model mini` (or square/wide) and `ble_start`
+3. Connect your app to the simulator
+4. View received prints at `http://instax-simulator.local`
+5. Iterate until prints look correct
+
+**Step 2: Test with Real Printer**
+
+Once your app works with the simulator:
+1. Connect to a real INSTAX printer
+2. Start with a few test prints
+3. Verify colors, orientation, and framing
+
+### Common Pitfalls
+
+1. **Forgetting the checksum** - Every packet needs a valid XOR checksum
+2. **Wrong byte order** - Length fields are little-endian
+3. **Not waiting for ACKs** - Always wait for printer acknowledgement before sending the next DATA packet
+4. **Wrong image orientation** - Link 3 requires vertical flip; others don't
+5. **File too large** - Compress JPEG to fit within model's limit
+6. **Missing handshake** - Must query printer info before printing
+7. **Skipping the pre-EXECUTE delay** - Square Link needs a 1-second pause before EXECUTE command
+
+### Platform-Specific Notes
+
+**iOS/macOS (CoreBluetooth):**
+- Use `CBCentralManager` to scan and connect
+- Write to characteristic with `.withResponse` for reliable delivery
+- Handle background modes if app needs to print while backgrounded
+
+**Android (Android BLE):**
+- Request `BLUETOOTH_CONNECT` and `BLUETOOTH_SCAN` permissions (Android 12+)
+- Use `BluetoothGattCallback` for responses
+- Consider using a BLE library like RxAndroidBle for easier async handling
+
+**Python (bleak):**
+- Great for prototyping and testing
+- See [javl/InstaxBLE](https://github.com/javl/InstaxBLE) for working example
+- Can run on Raspberry Pi for embedded projects
+
+**Web (Web Bluetooth):**
+- Limited browser support (Chrome/Edge on desktop)
+- Good for quick demos and testing tools
+- See [Web Bluetooth API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Bluetooth_API)
+
+### Getting Help
+
+- **Protocol questions:** Check [INSTAX_PROTOCOL.md](INSTAX_PROTOCOL.md) first
+- **Implementation issues:** Study the reference implementations
+- **Simulator problems:** Open an issue on this repository
+- **Community discussion:** See [jpwsutton/instax_api issues](https://github.com/jpwsutton/instax_api/issues) for protocol discovery history
